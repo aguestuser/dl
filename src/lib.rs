@@ -17,52 +17,53 @@ pub struct Info {
 }
 
 pub fn get_info(uri: Uri) -> impl Future<Item = Response<Body>, Error = ()> {
-    let client = Client::new();
+    /***********************************
+     * TODO:
+     * - add TLS connector
+     * - short circuit if response "accept-ranges" header != BYTE_RANGE_TYPE
+     * - short circuit if response "content-type" header != BINARY_CONTENT_TYPE
+     ***********************************/
     let req = Request::builder()
         .uri(&uri)
         .method(Method::HEAD)
         .body(Body::empty())
-        .unwrap();
+        .expect("Failed to build request object")
 
-    client
+    Client::new()
         .request(req)
         .and_then(|res| future::ok(res))
-        .map_err(|err| {
-            eprintln!("Error: {}", err);
-        })
+        .map_err(|err| eprintln!("Error: {}", err))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hyper::rt;
-    // TODO: support https
+    use tokio::runtime::current_thread::Runtime;
+
     const SMALL_FILE_URL: &'static str = "http://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
 
     #[test]
     fn getting_file_info() {
-        // let expected_info = super::Info {
-        //     content_length: 53143,
-        //     etag: Some("ac89ac31a669c13ec4ce037f1203022c".to_string()),
-        // };
         let uri = SMALL_FILE_URL.parse::<Uri>().unwrap();
+        let mut rt = Runtime::new().unwrap();
 
-        rt::run(rt::lazy(|| {
-            get_info(uri).and_then(move |resp| {
-                let (status, headers) = (resp.status(), resp.headers());
-                // the response looks okay
-                assert_eq!(status, hyper::StatusCode::OK);
-                assert_eq!(headers.get("accept-ranges").unwrap(), BYTES_RANGE_TYPE);
-                assert_eq!(headers.get("content-type").unwrap(), BINARY_CONTENT_TYPE);
+        let future_result = get_info(uri).and_then(move |resp| {
+            let (status, headers) = (resp.status(), resp.headers());
 
-                // the response contains correct data bout resume
-                assert_eq!(headers.get("content-length").unwrap(), &"53143");
-                assert_eq!(
-                    headers.get("etag").unwrap(),
-                    &"\"ac89ac31a669c13ec4ce037f1203022c\""
-                );
-                future::ok(())
-            })
-        }));
+            // assert the response is well-formed
+            assert_eq!(status, hyper::StatusCode::OK);
+            assert_eq!(headers.get("accept-ranges").unwrap(), BYTES_RANGE_TYPE);
+            assert_eq!(headers.get("content-type").unwrap(), BINARY_CONTENT_TYPE);
+
+            // assert the response contains correct data bout resume
+            assert_eq!(headers.get("content-length").unwrap(), &"53143");
+            assert_eq!(
+                headers.get("etag").unwrap(),
+                &"\"ac89ac31a669c13ec4ce037f1203022c\""
+            );
+            future::ok(())
+        });
+
+        rt.block_on(future_result).unwrap();
     }
 }

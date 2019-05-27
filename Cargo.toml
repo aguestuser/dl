@@ -7,3 +7,4 @@ edition = "2018"
 [dependencies]
 hyper = "0.12"
 futures = "0.1.27"
+tokio = { version = "0.1.14", default-features = false, features = ["rt-full"] }
