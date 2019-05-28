@@ -13,8 +13,14 @@ use std::fmt;
 pub const BYTES_RANGE_TYPE: &'static str = "bytes";
 pub const BINARY_CONTENT_TYPE: &'static str = "binary/octet-stream";
 
+/**************************************************************************
+ * TODO:
+ * - this custom error boilerplate is ridiculous!
+ * - use failure instead: https://boats.gitlab.io/failure/intro.html
+ **************************************************************************/
 #[derive(Debug)]
 pub enum DlError {
+    Http,
     ParseContentLength,
     ValidFileMetadata,
 }
@@ -22,8 +28,9 @@ pub enum DlError {
 impl fmt::Display for DlError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            DlError::ValidFileMetadata => write!(f, "File does not have valid metadata",),
-            DlError::ParseContentLength => write!(f, "Failed to parse content length header",),
+            DlError::Http => write!(f, "Failed HTTP request"),
+            DlError::ValidFileMetadata => write!(f, "File does not have valid metadata"),
+            DlError::ParseContentLength => write!(f, "Failed to parse content length header"),
         }
     }
 }
@@ -31,6 +38,7 @@ impl fmt::Display for DlError {
 impl Error for DlError {
     fn description(&self) -> &str {
         match *self {
+            DlError::Http => "Failed HTTP request",
             DlError::ValidFileMetadata => "File does not have valid metadata",
             DlError::ParseContentLength => "Failed to parse content length header",
         }
@@ -47,7 +55,7 @@ pub fn fetch_file_metadata(
     uri: Uri,
 ) -> impl Future<Item = Result<FileMetadata, DlError>, Error = HyperError> {
     /***********************************
-     * TODO: add TLS connector
+     * TODO: add TLS connector here!
      ***********************************/
     let req = Request::builder()
         .uri(&uri)
@@ -57,14 +65,22 @@ pub fn fetch_file_metadata(
 
     Client::new().request(req).map(|res| {
         let (status, headers) = (res.status(), res.headers());
-        has_file_metadata(status, headers).and_then(|_| parse_file_metadata(headers))
+        is_success(status)
+            .and_then(|_| have_file_metadata(headers))
+            .and_then(|_| parse_file_metadata(headers))
     })
 }
 
-fn has_file_metadata(status: StatusCode, headers: &HeaderMap<HeaderValue>) -> Result<(), DlError> {
-    match status == StatusCode::OK
-        && headers.get("accept-ranges").unwrap() == BYTES_RANGE_TYPE
-        && headers.get("content-type").unwrap() == BINARY_CONTENT_TYPE
+fn is_success(status: StatusCode) -> Result<(), DlError> {
+    match status.is_success() || status.is_redirection() {
+        true => Ok(()),
+        false => Err(DlError::Http),
+    }
+}
+
+fn have_file_metadata(headers: &HeaderMap<HeaderValue>) -> Result<(), DlError> {
+    match headers.get("accept-ranges") == Some(&HeaderValue::from_static(BYTES_RANGE_TYPE))
+        && headers.get("content-type") == Some(&HeaderValue::from_static(BINARY_CONTENT_TYPE))
     {
         true => Ok(()),
         false => Err(DlError::ValidFileMetadata),
