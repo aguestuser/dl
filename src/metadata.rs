@@ -1,10 +1,6 @@
-#[allow(unused_imports)]
-#[macro_use]
-extern crate lazy_static;
-
+use crate::error::DlError;
+use crate::https::HttpsClient;
 use hyper;
-use hyper::client::Client;
-use hyper::client::HttpConnector;
 use hyper::error::Error as HyperError;
 use hyper::header::HeaderValue;
 use hyper::rt::Future;
@@ -12,46 +8,9 @@ use hyper::HeaderMap;
 use hyper::StatusCode;
 use hyper::{Body, Request};
 use hyper::{Method, Uri};
-use hyper_tls::HttpsConnector;
-use std::error::Error;
-use std::fmt;
-
-type HttpsClient = Client<HttpsConnector<HttpConnector>, Body>;
 
 pub const BYTES_RANGE_TYPE: &'static str = "bytes";
 pub const BINARY_CONTENT_TYPE: &'static str = "binary/octet-stream";
-
-/**************************************************************************
- * TODO:
- * - this custom error boilerplate is ridiculous!
- * - use failure instead: https://boats.gitlab.io/failure/intro.html
- **************************************************************************/
-#[derive(Debug)]
-pub enum DlError {
-    Http,
-    ParseContentLength,
-    ValidFileMetadata,
-}
-
-impl fmt::Display for DlError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            DlError::Http => write!(f, "Failed HTTP request"),
-            DlError::ValidFileMetadata => write!(f, "File does not have valid metadata"),
-            DlError::ParseContentLength => write!(f, "Failed to parse content length header"),
-        }
-    }
-}
-
-impl Error for DlError {
-    fn description(&self) -> &str {
-        match *self {
-            DlError::Http => "Failed HTTP request",
-            DlError::ValidFileMetadata => "File does not have valid metadata",
-            DlError::ParseContentLength => "Failed to parse content length header",
-        }
-    }
-}
 
 #[derive(Debug, PartialEq)]
 pub struct FileMetadata {
@@ -59,13 +18,23 @@ pub struct FileMetadata {
     etag: Option<String>,
 }
 
-pub fn fetch_file_metadata(
+/// Uses a `client` to issue a HEAD request to the given `uri`.
+///
+/// Inspects the response to determine:
+/// - whether the uri supports range requests
+/// - the content length of the file, and (optionally) its etag
+///
+/// On happy path:
+/// - returns metadata wrapped in a `FileMetadata` struct
+///
+/// On sad path, returns appropriate error if:
+/// - request fails
+/// - metadata headers are not present
+/// - parsing headers fails
+pub fn fetch_head(
     client: &HttpsClient,
     uri: Uri,
 ) -> impl Future<Item = Result<FileMetadata, DlError>, Error = HyperError> {
-    /***********************************
-     * TODO: add TLS connector here!
-     ***********************************/
     let req = Request::builder()
         .uri(&uri)
         .method(Method::HEAD)
@@ -116,24 +85,21 @@ fn parse_etag(headers: &HeaderMap<HeaderValue>) -> Option<String> {
     headers
         .get("etag")
         .map(|val| val.to_str())
-        .and_then(|maybe_str| maybe_str.ok().map(|s| s[1..s.len() - 1].to_string()))
+        .and_then(|maybe_str| maybe_str.ok().map(|s| s[1..s.len() - 1].to_string())) // remove escaped quotes
 }
 
 #[cfg(test)]
-mod tests {
+mod metadata_tests {
     use super::*;
+    use crate::https;
     use futures::future;
-
+    use std::error::Error;
     use tokio::runtime::current_thread::Runtime;
 
     const SMALL_FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
 
     lazy_static! {
-        pub static ref CLIENT: HttpsClient = {
-            let mut https = HttpsConnector::new(4).expect("TLS initialization failed");
-            https.https_only(true);
-            Client::builder().build::<_, hyper::Body>(https)
-        };
+        pub static ref CLIENT: HttpsClient = { https::get_client() };
     }
 
     #[test]
@@ -141,7 +107,7 @@ mod tests {
         let uri = SMALL_FILE_URL.parse::<Uri>().unwrap();
         let mut rt = Runtime::new().unwrap();
 
-        let future_result = fetch_file_metadata(&CLIENT, uri).and_then(move |res| {
+        let future_result = fetch_head(&CLIENT, uri).and_then(move |res| {
             assert_eq!(
                 res.unwrap(),
                 FileMetadata {
@@ -160,7 +126,7 @@ mod tests {
         let uri = "https://google.com".parse::<Uri>().unwrap();
         let mut rt = Runtime::new().unwrap();
 
-        let future_result = fetch_file_metadata(&CLIENT, uri).and_then(move |res| {
+        let future_result = fetch_head(&CLIENT, uri).and_then(move |res| {
             assert_eq!(
                 res.err().unwrap().description(),
                 DlError::ValidFileMetadata.description()

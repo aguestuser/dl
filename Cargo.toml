@@ -5,6 +5,8 @@ authors = ["aguestuser"]
 edition = "2018"
 
 [dependencies]
-hyper = "0.12"
 futures = "0.1.27"
+hyper = "0.12"
+hyper-tls = "0.3.2"
+lazy_static = "1.2.0"
 tokio = { version = "0.1.14", default-features = false, features = ["rt-full"] }
