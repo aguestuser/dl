@@ -52,7 +52,7 @@ pub fn fetch_head(
 fn is_success(status: StatusCode) -> Result<(), DlError> {
     match status.is_success() || status.is_redirection() {
         true => Ok(()),
-        false => Err(DlError::Http),
+        false => Err(DlError::RequestFailed(status.as_u16())),
     }
 }
 

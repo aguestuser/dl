@@ -9,7 +9,8 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum DlError {
-    Http,
+    Http(hyper::error::Error),
+    RequestFailed(u16),
     Checksum,
     Io(std::io::Error),
     ParseContentLength,
@@ -19,10 +20,11 @@ pub enum DlError {
 impl fmt::Display for DlError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            DlError::Http => write!(f, "Failed HTTP request"),
+            DlError::Http(ref err) => err.fmt(f),
             DlError::Io(ref err) => err.fmt(f),
             DlError::Checksum => write!(f, "Failed checksum (hashing or hex encoding failed)"),
             DlError::ParseContentLength => write!(f, "Failed to parse content length header"),
+            DlError::RequestFailed(code) => write!(f, "Request failed with status code {}", code),
             DlError::ValidFileMetadata => write!(f, "File does not have valid metadata"),
         }
     }
@@ -31,12 +33,19 @@ impl fmt::Display for DlError {
 impl Error for DlError {
     fn description(&self) -> &str {
         match *self {
-            DlError::Http => "Failed HTTP request",
+            DlError::Http(ref err) => err.description(),
             DlError::Io(ref err) => err.description(),
             DlError::Checksum => "Failed checksum (hashing or hex encoding failed)",
             DlError::ParseContentLength => "Failed to parse content length header",
+            DlError::RequestFailed(_) => "Request failed",
             DlError::ValidFileMetadata => "File does not have valid metadata",
         }
+    }
+}
+
+impl From<hyper::error::Error> for DlError {
+    fn from(cause: hyper::error::Error) -> DlError {
+        DlError::Http(cause)
     }
 }
 

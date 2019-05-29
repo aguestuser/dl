@@ -3,6 +3,7 @@
 extern crate lazy_static;
 
 pub mod checksum;
+pub mod download;
 pub mod error;
 pub mod https;
 pub mod metadata;
