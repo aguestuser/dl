@@ -36,8 +36,7 @@ mod download_tests {
     use super::*;
     use crate::checksum;
     use crate::https;
-    use futures::future;
-    use hyper::rt::{self, Future};
+    use tokio::runtime::Runtime;
 
     const SMALL_FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
     const SMALL_FILE_MD5_SUM: &'static str = "ac89ac31a669c13ec4ce037f1203022c";
@@ -49,19 +48,19 @@ mod download_tests {
     #[test]
     fn downloading_file() {
         let uri = SMALL_FILE_URL.parse::<Uri>().unwrap();
+        let mut rt = Runtime::new().unwrap();
 
-        rt::run(rt::lazy(|| {
+        let result =
             download_file(&CLIENT, uri, Path::new("data/foo.pdf"))
-                .and_then(|_| {
+                .map(|_| {
                     assert!(
                         checksum::md5sum_check("data/foo.pdf", SMALL_FILE_MD5_SUM).unwrap_or(false)
                     );
-                    future::ok(())
                 })
-                .map(|_| ())
-                .map_err(|_| ())
-        }))
+                .and_then(|_| {
+                    tokio_fs::remove_file("data/foo.pdf").map_err(|err| DlError::Io(err))
+                });
 
-        // rt.block_on(future_result).unwrap();
+        rt.block_on(result).unwrap();
     }
 }

@@ -94,7 +94,7 @@ mod metadata_tests {
     use crate::https;
     use futures::future;
     use std::error::Error;
-    use tokio::runtime::current_thread::Runtime;
+    use tokio::runtime::Runtime;
 
     const SMALL_FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
 
