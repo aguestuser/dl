@@ -12,24 +12,28 @@ pub fn download_file<P: AsRef<Path> + Send + 'static>(
     client: &HttpsClient,
     uri: Uri,
     target: P,
-) -> Box<Future<Item = (), Error = DlError> + Send> {
+) -> Box<Future<Item = usize, Error = DlError> + Send> {
     // TODO: consider moving Uri parsing logic inside this function
     let response_future = client.get(uri).map_err(|err| DlError::Http(err));
     let file_future = File::create(target).map_err(|err| DlError::Io(err));
     Box::new(response_future.join(file_future).and_then(write_to_file))
 }
 
-fn write_to_file(args: (Response<Body>, File)) -> impl Future<Item = (), Error = DlError> {
-    let (response, file) = args;
+fn write_to_file(
+    (response, file): (Response<Body>, File),
+) -> impl Future<Item = usize, Error = DlError> {
     response
         .into_body()
         .map_err(DlError::Http)
-        .fold(file, |file, chunk| {
+        .fold((file, 0), |(file, bytes_written), chunk| {
             io::write_all(file, chunk)
-                .map(|(f, _c)| f)
+                .map(move |(f, c)| (f, bytes_written + c.len()))
                 .map_err(DlError::Io)
         })
-        .map(drop)
+        .map(|(f, bytes_written)| {
+            drop(f);
+            bytes_written
+        })
 }
 
 #[cfg(test)]
@@ -53,7 +57,8 @@ mod download_tests {
         let mut rt = Runtime::new().unwrap();
 
         let result = download_file(&CLIENT, uri, TARGET_PATH)
-            .map(|_| {
+            .map(|bytes_written| {
+                assert_eq!(bytes_written, 53143);
                 assert!(checksum::md5sum_check(TARGET_PATH, SMALL_FILE_MD5_SUM).unwrap_or(false));
             })
             .and_then(|_| tokio_fs::remove_file(TARGET_PATH).map_err(|err| DlError::Io(err)));
