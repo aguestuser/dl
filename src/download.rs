@@ -53,20 +53,33 @@ pub fn download_file<P: ThreadsafePath>(
     client: &HttpsClient,
     uri: Uri,
     size: u64,
+    piece_size: u64,
     target: P,
-) -> Box<Future<Item = u64, Error = DlError> + Send> {
+) -> impl Future<Item = u64, Error = DlError> {
+    // ) -> Box<Future<Item = u64, Error = DlError> + Send> {
     // TODO: consider moving Uri parsing logic inside this function
     // let response_future = client.get(uri).map_err(|err| DlError::Http(err));
     // let file_future = File::create(target).map_err(|err| DlError::Io(err));
     // Box::new(response_future.join(file_future).and_then(write_to_file));
-    create_blank_file(target, size);
-    Box::new(future::ok(size))
+    create_blank_file(size, target).and_then(|f| {
+        println!("");
+
+        future::ok(1)
+    })
+    // Box::new(future::ok(size))
 }
+
+// pub fn download_piece<P: ThreadsafePath>(
+//     client: &HttpsClient,
+//     uri: Uri,
+//     offset: u64,
+
+// )
 
 /// creates a file of `size` bytes at `path`, containing repeated null bytes
 fn create_blank_file<P: ThreadsafePath>(
-    path: P,
     size: u64,
+    path: P,
 ) -> impl Future<Item = u64, Error = DlError> {
     File::create(path)
         .map_err(DlError::Io)
@@ -96,8 +109,15 @@ fn get_file_size(file: File) -> impl Future<Item = u64, Error = DlError> {
 
 /// TODO: determine optimal piece size for given file size according to these norms:
 /// http://wiki.depthstrike.com/index.php/Recommendations#Torrent_Piece_Sizes_when_making_torrents
-fn get_piece_size(file_size: usize) -> usize {
+fn get_piece_size(file_size: u64) -> u64 {
     4096
+}
+
+fn calc_offsets(file_size: u64, piece_size: u64) -> Vec<u64> {
+    (0..file_size as usize)
+        .step_by(piece_size as usize)
+        .map(|x| x as u64)
+        .collect()
 }
 
 #[cfg(test)]
@@ -109,6 +129,7 @@ mod download_tests {
 
     const FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
     const FILE_SIZE: u64 = 53143;
+    const PIECE_SIZE: u64 = 4096;
     const FILE_MD5_SUM: &'static str = "ac89ac31a669c13ec4ce037f1203022c";
     const ZEROS_MD5_SUM: &'static str = "0f343b0931126a20f133d67c2b018a3b";
     const TARGET_PATH: &'static str = "data/foo.pdf";
@@ -120,11 +141,11 @@ mod download_tests {
     #[test]
     #[ignore]
     fn downloading_file() {
-        // ignore until we implement par
         let uri = FILE_URL.parse::<Uri>().unwrap();
+        let piece_size = get_piece_size(FILE_SIZE);
         let mut rt = Runtime::new().unwrap();
 
-        let result = download_file(&CLIENT, uri, FILE_SIZE, TARGET_PATH)
+        let result = download_file(&CLIENT, uri, FILE_SIZE, piece_size, TARGET_PATH)
             .map(|bytes_written| {
                 assert_eq!(bytes_written, FILE_SIZE);
                 assert!(checksum::md5sum_check(TARGET_PATH, FILE_MD5_SUM).unwrap_or(false));
@@ -138,7 +159,7 @@ mod download_tests {
     fn creating_blank_file() {
         let mut rt = Runtime::new().unwrap();
 
-        let result = create_blank_file(TARGET_PATH, 1024)
+        let result = create_blank_file(1024, TARGET_PATH)
             .map(|bytes_written| {
                 assert_eq!(bytes_written, 1024);
                 assert!(checksum::md5sum_check(TARGET_PATH, ZEROS_MD5_SUM).unwrap_or(false));
@@ -146,5 +167,16 @@ mod download_tests {
             .and_then(|_| tokio_fs::remove_file(TARGET_PATH).map_err(|err| DlError::Io(err)));
 
         rt.block_on(result).unwrap();
+    }
+
+    #[test]
+    fn calculating_offsets() {
+        assert_eq!(calc_offsets(10, 3), vec![0, 3, 6, 9]);
+        assert_eq!(
+            calc_offsets(FILE_SIZE, PIECE_SIZE),
+            vec![
+                0, 4096, 8192, 12288, 16384, 20480, 24576, 28672, 32768, 36864, 40960, 45056, 49152
+            ]
+        )
     }
 }
