@@ -8,6 +8,8 @@ edition = "2018"
 #hex-literal = "0.2.0"
 futures = "0.1.27"
 hex = "0.3.2"
+# this is gross: we use http literally only for its error variant!
+http = "0.1.17"
 hyper = "0.12"
 hyper-tls = "0.3.2"
 lazy_static = "1.2.0"

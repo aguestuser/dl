@@ -1,3 +1,4 @@
+use http;
 use std::error::Error;
 use std::fmt;
 
@@ -9,7 +10,8 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum DlError {
-    Http(hyper::error::Error),
+    Http(http::Error),
+    Hyper(hyper::error::Error),
     RequestFailed(u16),
     Checksum,
     Io(std::io::Error),
@@ -22,6 +24,7 @@ impl fmt::Display for DlError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             DlError::Http(ref err) => err.fmt(f),
+            DlError::Hyper(ref err) => err.fmt(f),
             DlError::Io(ref err) => err.fmt(f),
             DlError::Checksum => write!(f, "Failed checksum (hashing or hex encoding failed)"),
             DlError::ParseContentLength => write!(f, "Failed to parse content length header"),
@@ -36,6 +39,7 @@ impl Error for DlError {
     fn description(&self) -> &str {
         match *self {
             DlError::Http(ref err) => err.description(),
+            DlError::Hyper(ref err) => err.description(),
             DlError::Io(ref err) => err.description(),
             DlError::Checksum => "Failed checksum (hashing or hex encoding failed)",
             DlError::ParseContentLength => "Failed to parse content length header",
@@ -46,9 +50,15 @@ impl Error for DlError {
     }
 }
 
+impl From<http::Error> for DlError {
+    fn from(cause: http::Error) -> DlError {
+        DlError::Http(cause)
+    }
+}
+
 impl From<hyper::error::Error> for DlError {
     fn from(cause: hyper::error::Error) -> DlError {
-        DlError::Http(cause)
+        DlError::Hyper(cause)
     }
 }
 
