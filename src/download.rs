@@ -2,79 +2,62 @@ use crate::error::DlError;
 use crate::https::HttpsClient;
 use futures::{future, stream, Future, Stream};
 use hyper;
-use tokio_io::AsyncWrite;
-// use hyper::rt::Future;
-use hyper::{Body, Response, Uri};
+use hyper::Response;
+use hyper::{Body, Request, Uri};
+use std::io::SeekFrom;
 use std::path::Path;
 use tokio_fs::File;
 use tokio_io::io;
+use tokio_io::AsyncWrite;
 
 // the trait bound describing a typesafe static string to be interpreted as a path by tokio_io
 // (it's a mouthful, so we alias it)
-pub trait ThreadsafePath: AsRef<Path> + Send + 'static {}
-impl<T: AsRef<Path> + Send + 'static> ThreadsafePath for T {}
+pub trait ThreadsafePath: AsRef<Path> + Send + Sync + 'static {}
+impl<T: AsRef<Path> + Send + Sync + 'static> ThreadsafePath for T {}
 
-// pub fn download_file<P: ThreadsafePath>(
-//     client: &HttpsClient,
-//     uri: Uri,
-//     _size: usize,
-//     target: P,
-// ) -> Box<Future<Item = usize, Error = DlError> + Send> {
-//     // TODO: consider moving Uri parsing logic inside this function
-//     let response_future = client.get(uri).map_err(|err| DlError::Http(err));
-//     let file_future = File::create(target).map_err(|err| DlError::Io(err));
-//     Box::new(response_future.join(file_future).and_then(write_to_file))
-// }
+/// given:a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path
+/// download the entire file in sequence and store it to disk, returning a handle to the file
+/// NOTE: this function is provided mainly for benchmarking comparison with its parallel counterpart
+pub fn download_file_seq<P: ThreadsafePath>(
+    client: &HttpsClient,
+    uri: Uri,
+    path: &'static P,
+) -> Box<Future<Item = (), Error = DlError> + Send> {
+    // TODO: consider moving Uri parsing logic inside this function
+    let response = client.get(uri).map_err(|err| DlError::Http(err));
+    let file = File::create(path).map_err(|err| DlError::Io(err));
+    Box::new(
+        response
+            .join(file)
+            .and_then(|(r, f)| write_to_file(r, f, 0)),
+    )
+}
 
-// fn write_to_file(
-//     (response, file): (Response<Body>, File),
-// ) -> impl Future<Item = usize, Error = DlError> {
-//     response
-//         .into_body()
-//         .map_err(DlError::Http)
-//         .fold((file, 0), |(file, bytes_written), chunk| {
-//             io::write_all(file, chunk)
-//                 .map(move |(f, c)| (f, bytes_written + c.len()))
-//                 .map_err(DlError::Io)
-//         })
-//         .map(|(f, bytes_written)| {
-//             drop(f);
-//             bytes_written
-//         })
-// }
-
-/// given a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path
+/// given a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path:
 /// - create an empty file of the correct size on the local file system
-/// - determine the optimal piece size (by some heuristic)
+/// - determine the optimal piece size
 /// - iterate over a range from 0 to file's size with step piece size
 /// - download a piece of the file at each piece-sized offset
 /// - write that piece of the file to the correct offset in the local file
-pub fn download_file<P: ThreadsafePath>(
-    client: &HttpsClient,
+pub fn download_file_par<'a, 'b, P: ThreadsafePath>(
+    client: &'a HttpsClient,
     uri: Uri,
-    size: u64,
+    file_size: u64,
     piece_size: u64,
-    target: P,
-) -> impl Future<Item = u64, Error = DlError> {
-    // ) -> Box<Future<Item = u64, Error = DlError> + Send> {
+    path: &'static P,
+) -> impl Future<Item = bool, Error = DlError> + 'a {
     // TODO: consider moving Uri parsing logic inside this function
-    // let response_future = client.get(uri).map_err(|err| DlError::Http(err));
-    // let file_future = File::create(target).map_err(|err| DlError::Io(err));
-    // Box::new(response_future.join(file_future).and_then(write_to_file));
-    create_blank_file(size, target).and_then(|f| {
-        println!("");
-
-        future::ok(1)
+    create_blank_file(file_size, path).and_then(move |file_size| {
+        // TODO: return error if file is wrong size
+        gen_offsets(file_size, piece_size)
+            .map(move |offset| download_piece(client, &uri, file_size, piece_size, offset, path))
+            .map_err(|_| DlError::StreamProcessing)
+            // TODO: get rid of this garbage!
+            .fold(true, |_, _| {
+                future::ok(true).map_err(|_: usize| DlError::StreamProcessing)
+            })
     })
-    // Box::new(future::ok(size))
 }
-
-// pub fn download_piece<P: ThreadsafePath>(
-//     client: &HttpsClient,
-//     uri: Uri,
-//     offset: u64,
-
-// )
 
 /// creates a file of `size` bytes at `path`, containing repeated null bytes
 fn create_blank_file<P: ThreadsafePath>(
@@ -84,12 +67,62 @@ fn create_blank_file<P: ThreadsafePath>(
     File::create(path)
         .map_err(DlError::Io)
         .and_then(move |file| {
-            // TODO: improve perf by writing chunks of null bytes instead of one at a time?
+            // TODO: improve perf by...
+            // - writing chunks of null bytes instead of one at a time?
+            // - reserving space without actually writing to it?
             futures::stream::repeat([0u8])
                 .take(size)
-                .fold(file, write_chunk)
+                .fold(file, |file, buf| write_chunk(file, buf))
                 .and_then(get_file_size)
         })
+}
+
+pub fn download_piece<'a, P: ThreadsafePath>(
+    client: &HttpsClient,
+    uri: &Uri,
+    file_size: u64,
+    piece_size: u64,
+    offset: u64,
+    path: P,
+) -> Box<Future<Item = (), Error = DlError>> {
+    let file = File::create(path).map_err(|err| DlError::Io(err));
+    let response = client
+        .request(range_request_of(uri, file_size, piece_size, offset))
+        .map_err(DlError::Http);
+    Box::new(
+        response
+            .join(file)
+            .and_then(|(r, f)| write_to_file(r, f, 0)),
+    )
+}
+
+pub fn range_request_of(
+    uri: &Uri,
+    _file_size: u64,
+    _piece_size: u64,
+    _offset: u64,
+) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .method("RANGE")
+        .body(Body::empty())
+        .expect("Failed to build RANGE request")
+}
+
+fn write_to_file(
+    response: Response<Body>,
+    file: File,
+    offset: u64,
+) -> impl Future<Item = (), Error = DlError> {
+    file.seek(SeekFrom::Start(offset))
+        .map_err(DlError::Io)
+        .and_then(|(file, _)| {
+            response
+                .into_body()
+                .map_err(DlError::Http)
+                .fold(file, write_chunk)
+        })
+        .map(drop)
 }
 
 /// writes the contents of a buffer into a file, returning a handle to the file
@@ -99,7 +132,7 @@ where
     B: AsRef<[u8]>,
 {
     io::write_all(file, buf)
-        .map(|(f, _)| f)
+        .map(move |(f, _)| f)
         .map_err(DlError::Io)
 }
 
@@ -109,15 +142,17 @@ fn get_file_size(file: File) -> impl Future<Item = u64, Error = DlError> {
 
 /// TODO: determine optimal piece size for given file size according to these norms:
 /// http://wiki.depthstrike.com/index.php/Recommendations#Torrent_Piece_Sizes_when_making_torrents
-fn get_piece_size(file_size: u64) -> u64 {
+pub fn get_piece_size(_file_size: u64) -> u64 {
     4096
 }
 
-fn calc_offsets(file_size: u64, piece_size: u64) -> Vec<u64> {
-    (0..file_size as usize)
-        .step_by(piece_size as usize)
-        .map(|x| x as u64)
-        .collect()
+// fn calc_offsets(file_size: u64, piece_size: u64) -> Vec<u64> {
+//     let (fs, ps) = (file_size as usize, piece_size as usize);
+//     (0..fs).step_by(ps).map(|x| x as u64).collect()
+// }
+
+fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error = ()> {
+    stream::iter_ok::<_, ()>((0..file_size).step_by(piece_size as usize))
 }
 
 #[cfg(test)]
@@ -139,15 +174,31 @@ mod download_tests {
     }
 
     #[test]
-    #[ignore]
-    fn downloading_file() {
+    fn downloading_file_in_sequence() {
+        let uri = FILE_URL.parse::<Uri>().unwrap();
+        let mut rt = Runtime::new().unwrap();
+
+        let result = download_file_seq(&CLIENT, uri, TARGET_PATH)
+            .and_then(|_| tokio_fs::metadata(TARGET_PATH).map_err(DlError::Io))
+            .map(|md| {
+                assert_eq!(md.len(), FILE_SIZE);
+                assert!(checksum::md5sum_check(TARGET_PATH, FILE_MD5_SUM).unwrap_or(false));
+            })
+            .and_then(|_| tokio_fs::remove_file(TARGET_PATH).map_err(|err| DlError::Io(err)));
+
+        rt.block_on(result).unwrap();
+    }
+
+    #[test]
+    fn downloading_file_in_parallel() {
         let uri = FILE_URL.parse::<Uri>().unwrap();
         let piece_size = get_piece_size(FILE_SIZE);
         let mut rt = Runtime::new().unwrap();
 
-        let result = download_file(&CLIENT, uri, FILE_SIZE, piece_size, TARGET_PATH)
-            .map(|bytes_written| {
-                assert_eq!(bytes_written, FILE_SIZE);
+        let result = download_file_par(&CLIENT, uri, FILE_SIZE, piece_size, &TARGET_PATH)
+            .and_then(|_| tokio_fs::metadata(TARGET_PATH).map_err(DlError::Io))
+            .map(|md| {
+                assert_eq!(md.len(), FILE_SIZE);
                 assert!(checksum::md5sum_check(TARGET_PATH, FILE_MD5_SUM).unwrap_or(false));
             })
             .and_then(|_| tokio_fs::remove_file(TARGET_PATH).map_err(|err| DlError::Io(err)));
@@ -160,8 +211,8 @@ mod download_tests {
         let mut rt = Runtime::new().unwrap();
 
         let result = create_blank_file(1024, TARGET_PATH)
-            .map(|bytes_written| {
-                assert_eq!(bytes_written, 1024);
+            .map(|file_size| {
+                assert_eq!(file_size, 1024);
                 assert!(checksum::md5sum_check(TARGET_PATH, ZEROS_MD5_SUM).unwrap_or(false));
             })
             .and_then(|_| tokio_fs::remove_file(TARGET_PATH).map_err(|err| DlError::Io(err)));
@@ -169,11 +220,25 @@ mod download_tests {
         rt.block_on(result).unwrap();
     }
 
+    // #[test]
+    // fn calculating_offsets() {
+    //     assert_eq!(calc_offsets(10, 3), vec![0, 3, 6, 9]);
+    //     assert_eq!(
+    //         calc_offsets(FILE_SIZE, PIECE_SIZE),
+    //         vec![
+    //             0, 4096, 8192, 12288, 16384, 20480, 24576, 28672, 32768, 36864, 40960, 45056, 49152
+    //         ]
+    //     )
+    // }
+
     #[test]
-    fn calculating_offsets() {
-        assert_eq!(calc_offsets(10, 3), vec![0, 3, 6, 9]);
+    fn generating_offsets() {
         assert_eq!(
-            calc_offsets(FILE_SIZE, PIECE_SIZE),
+            gen_offsets(10, 3).collect().wait().unwrap(),
+            vec![0, 3, 6, 9]
+        );
+        assert_eq!(
+            gen_offsets(FILE_SIZE, PIECE_SIZE).collect().wait().unwrap(),
             vec![
                 0, 4096, 8192, 12288, 16384, 20480, 24576, 28672, 32768, 36864, 40960, 45056, 49152
             ]

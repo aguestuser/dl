@@ -14,6 +14,7 @@ pub enum DlError {
     Checksum,
     Io(std::io::Error),
     ParseContentLength,
+    StreamProcessing,
     ValidFileMetadata,
 }
 
@@ -25,6 +26,7 @@ impl fmt::Display for DlError {
             DlError::Checksum => write!(f, "Failed checksum (hashing or hex encoding failed)"),
             DlError::ParseContentLength => write!(f, "Failed to parse content length header"),
             DlError::RequestFailed(code) => write!(f, "Request failed with status code {}", code),
+            DlError::StreamProcessing => write!(f, "Stream processing error"),
             DlError::ValidFileMetadata => write!(f, "File does not have valid metadata"),
         }
     }
@@ -38,6 +40,7 @@ impl Error for DlError {
             DlError::Checksum => "Failed checksum (hashing or hex encoding failed)",
             DlError::ParseContentLength => "Failed to parse content length header",
             DlError::RequestFailed(_) => "Request failed",
+            DlError::StreamProcessing => "Stream processing error",
             DlError::ValidFileMetadata => "File does not have valid metadata",
         }
     }
