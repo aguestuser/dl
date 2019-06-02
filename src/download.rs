@@ -17,8 +17,6 @@ use tokio_io::AsyncWrite;
 pub trait ThreadsafePath: AsRef<Path> + Send + Sync + Display + 'static {}
 impl<T: AsRef<Path> + Send + Sync + Display + 'static> ThreadsafePath for T {}
 
-const CONCURRENCY_LIMIT: usize = 16;
-
 /// given:a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path
 /// download the entire file in sequence and store it to disk
 /// NOTE: this function is provided mainly for benchmarking comparison with its parallel counterpart
@@ -41,26 +39,24 @@ pub fn fetch_seq<P: ThreadsafePath>(
 /// - create an empty file of the correct size on the local file system
 /// - download pieces of the file in parallel
 /// - write each piece to the correct offset in the blank file (also in parallel)
-/// - returns the number of successfully written pieces
 pub fn fetch_par<'a, 'b, P: ThreadsafePath>(
     client: &'a HttpsClient,
     uri: &'static str,
     file_size: u64,
     piece_size: u64,
     path: &'static P,
-) -> impl Future<Item = usize, Error = DlError> + Send + 'a {
+) -> impl Future<Item = bool, Error = DlError> + Send + 'a {
+    // TODO:
+    // - return error if zeroed-out file is wrong size
+    // - make several rounds of downloads (retrying on error)
     let uri = Uri::from_static(uri);
     create_blank_file(file_size, path).and_then(move |_file_size| {
-        Stream::buffer_unordered(
-            gen_offsets(file_size, piece_size)
-                .map(move |offset| {
-                    download_piece(client, &uri, file_size, piece_size, offset, path)
-                })
-                .map_err(|_| DlError::StreamProcessing),
-            CONCURRENCY_LIMIT,
-        )
-        .collect()
-        .and_then(|pieces_written| future::ok(pieces_written.len()))
+        gen_offsets(file_size, piece_size)
+            .map(move |offset| download_piece(client, &uri, file_size, piece_size, offset, path))
+            .map_err(|_| DlError::StreamProcessing)
+            .collect()
+            .and_then(|dl_jobs| future::join_all(dl_jobs))
+            .map(|_| true)
     })
 }
 
@@ -164,8 +160,11 @@ pub fn get_piece_size(_file_size: u64) -> u64 {
     4096
 }
 
-fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error = ()> {
-    stream::iter_ok::<_, ()>((0..file_size).step_by(piece_size as usize))
+fn gen_offsets(
+    file_size: u64,
+    piece_size: u64,
+) -> impl Stream<Item = u64, Error = ()> {
+        stream::iter_ok::<_, ()>((0..file_size).step_by(piece_size as usize)),
 }
 
 #[cfg(test)]
