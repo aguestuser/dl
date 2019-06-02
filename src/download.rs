@@ -39,17 +39,23 @@ pub fn fetch_seq<P: ThreadsafePath>(
 /// - create an empty file of the correct size on the local file system
 /// - download pieces of the file in parallel
 /// - write each piece to the correct offset in the blank file (also in parallel)
-pub fn fetch_par<'a, 'b, P: ThreadsafePath>(
+pub fn fetch_par<'a, P: ThreadsafePath>(
     client: &'a HttpsClient,
     uri: &'static str,
     file_size: u64,
-    piece_size: u64,
     path: &'static P,
 ) -> impl Future<Item = bool, Error = DlError> + Send + 'a {
     // TODO:
-    // - return error if zeroed-out file is wrong size
-    // - make several rounds of downloads (retrying on error)
+    // - (1) increase fault tolerance by:
+    //   - make several rounds of downloads (inspecting completed futures for success/error retrying all failed requests/writes)
+    //   - persisting state of downloads in hashmap, serializing to disk at interval (to be able to restart on crash)
+    // - (2) prevent runaway requests from causing "too many open file errors"
+    //   - observed when ratio of pieces to threads gets very high
+    //   - caused by hyper keeping too many sockets open as http request speed exceeds file write speed
+    //   - see (e.g.): https://github.com/seanmonstar/reqwest/issues/386#issuecomment-440891158
+    //   - fix: buffer the stream (blockers: the types for that are hard!)
     let uri = Uri::from_static(uri);
+    let piece_size = calc_piece_size(file_size);
     create_blank_file(file_size, path).and_then(move |_file_size| {
         gen_offsets(file_size, piece_size)
             .map(move |offset| download_piece(client, &uri, file_size, piece_size, offset, path))
@@ -68,9 +74,7 @@ fn create_blank_file<P: ThreadsafePath>(
     File::create(path)
         .map_err(DlError::Io)
         .and_then(move |file| {
-            // TODO: improve perf (?) by...
-            // - writing chunks of null bytes instead of one at a time?
-            // - reserving space without actually writing to it?
+            // TODO: possible to do this more quickly by batching writes? (or is that optimized away by compiler?)
             futures::stream::repeat([0u8])
                 .take(size)
                 .fold(file, |file, buf| write_chunk(file, buf))
@@ -153,11 +157,32 @@ pub fn get_file_size(file: File) -> impl Future<Item = u64, Error = DlError> + S
     file.metadata().map(|(_, md)| md.len()).map_err(DlError::Io)
 }
 
-/// TODO: determine optimal piece size for given file size according to these norms:
+/// determine optimal piece size for given file size according to these norms:
 /// http://wiki.depthstrike.com/index.php/Recommendations#Torrent_Piece_Sizes_when_making_torrents
+fn calc_piece_size(file_size: u64) -> u64 {
+    if file_size <= 8_192 {
+        file_size // below 8KiB -> do not break into pieces
+    } else if is_between(file_size, 8_192, 131_072) {
+        8_192 // 8KiB..128KiB -> 8KiB
+    } else if is_between(file_size, 131_072, 52_428_800) {
+        32_768 // 128KiB..50MiB -> 32KiB
+    } else if is_between(file_size, 52_428_800, 157_286_400) {
+        65_536 // 50MiB..150MiB -> 64KiB
+    } else if is_between(file_size, 157_286_400, 367_001_600) {
+        131_072 // 150MiB..350MiB -> 127KiB
+    } else if is_between(file_size, 367_001_600, 536_870_900) {
+        262_144 // 350Mib..512MiB -> 256KiB
+    } else if is_between(file_size, 536_870_900, 1_073_742_000) {
+        524_288 // 512MiB..1GiB -> 512KiB
+    } else if is_between(file_size, 1_073_742_000, 2_147_484_000) {
+        1_048_576 // 1GiB..2GiB -> 1024KiB
+    } else {
+        2_097_152 // above 2GiB -> 2048KiB
+    }
+}
 
-pub fn get_piece_size(_file_size: u64) -> u64 {
-    4096
+fn is_between(n: u64, floor: u64, ceiling: u64) -> bool {
+    n > floor && n <= ceiling
 }
 
 fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error = ()> {
@@ -172,24 +197,19 @@ mod download_tests {
     use tokio::runtime::Runtime;
 
     const FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
-    const PIECE_SIZE: u64 = 4096;
-    const FILE_SIZE: u64 = 53143;
-    const PADDED_FILE_SIZE: u64 = 57239;
+    const FILE_SIZE: u64 = 53_143;
+    const PADDED_FILE_SIZE: u64 = 57_239;
     const FILE_MD5_SUM: &'static str = "ac89ac31a669c13ec4ce037f1203022c";
     const PADDED_FILE_MD5_SUM: &'static str = "fb8c6de35d7bb3afed571233307aff86";
     const ZEROS_MD5_SUM: &'static str = "0f343b0931126a20f133d67c2b018a3b";
 
-    lazy_static! {
-        pub static ref CLIENT: HttpsClient = { https::get_client() };
-    }
-
     #[test]
     fn downloading_file_in_sequence() {
         static PATH: &'static str = "data/foo_seq.pdf";
-
+        let client = https::get_client();
         let mut rt = Runtime::new().unwrap();
 
-        let result = fetch_seq(&CLIENT, &FILE_URL, &PATH)
+        let result = fetch_seq(&client, &FILE_URL, &PATH)
             .and_then(|_| tokio_fs::metadata(PATH).map_err(DlError::Io))
             .map(|md| {
                 // when run with entire test suite, sometimes an extra 4096 bytes gets tacked on in this test.
@@ -216,11 +236,12 @@ mod download_tests {
     #[test]
     fn downloading_file_in_parallel() {
         static PATH: &'static str = "data/foo_par.pdf";
-        let piece_size = 8192;
-
+        lazy_static! {
+            static ref CLIENT: HttpsClient = { https::get_client() };
+        }
         let mut rt = Runtime::new().unwrap();
 
-        let result = fetch_par(&CLIENT, &FILE_URL, FILE_SIZE, piece_size, &PATH)
+        let result = fetch_par(&CLIENT, &FILE_URL, FILE_SIZE, &PATH)
             .and_then(|_| tokio_fs::metadata(PATH).map_err(DlError::Io))
             .map(|md| {
                 assert_eq!(md.len(), FILE_SIZE);
@@ -246,13 +267,53 @@ mod download_tests {
     }
 
     #[test]
+    fn calculating_piece_sizes() {
+        // below 8KiB -> do not break into pieces
+        assert_eq!(calc_piece_size(100), 100);
+        assert_eq!(calc_piece_size(8_191), 8_191);
+
+        // 8KiB..32KiB -> 8KiB
+        assert_eq!(calc_piece_size(8_192), 8_192);
+        assert_eq!(calc_piece_size(8_193), 8_192);
+        assert_eq!(calc_piece_size(131_072), 8_192);
+
+        // 32KiB..50MiB -> 32KiB
+        assert_eq!(calc_piece_size(131_073), 32_768);
+        assert_eq!(calc_piece_size(52_428_800), 32_768);
+
+        // 50MiB..150MiB -> 64KiB
+        assert_eq!(calc_piece_size(52_428_801), 65_536);
+        assert_eq!(calc_piece_size(157_286_400), 65_536);
+
+        // 150MiB..350MiB -> 127KiB
+        assert_eq!(calc_piece_size(157_286_401), 131_072);
+        assert_eq!(calc_piece_size(367_001_600), 131_072);
+
+        // 350Mib..512MiB -> 256KiB
+        assert_eq!(calc_piece_size(367_001_601), 262_144);
+        assert_eq!(calc_piece_size(536_870_900), 262_144);
+
+        // 512MiB..1GiB -> 512KiB
+        assert_eq!(calc_piece_size(536_870_901), 524_288);
+        assert_eq!(calc_piece_size(1_073_742_000), 524_288);
+
+        // 1GiB..2GiB -> 1024KiB
+        assert_eq!(calc_piece_size(1_073_742_001), 1_048_576);
+        assert_eq!(calc_piece_size(2_147_484_000), 1_048_576);
+
+        // above 2GiB -> 2048KiB
+        assert_eq!(calc_piece_size(2_147_484_001), 2_097_152);
+        assert_eq!(calc_piece_size(200_147_484_00), 2_097_152);
+    }
+
+    #[test]
     fn generating_offsets() {
         assert_eq!(
             gen_offsets(10, 3).collect().wait().unwrap(),
             vec![0, 3, 6, 9]
         );
         assert_eq!(
-            gen_offsets(FILE_SIZE, PIECE_SIZE).collect().wait().unwrap(),
+            gen_offsets(FILE_SIZE, 4096).collect().wait().unwrap(),
             vec![
                 0, 4096, 8192, 12288, 16384, 20480, 24576, 28672, 32768, 36864, 40960, 45056, 49152
             ]

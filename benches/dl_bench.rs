@@ -4,9 +4,8 @@ extern crate criterion;
 #[macro_use]
 extern crate lazy_static;
 
-use criterion::black_box;
 use criterion::{Criterion, ParameterizedBenchmark};
-use downloader::{download, https};
+use dl::{download, https};
 use https::HttpsClient;
 use tokio::runtime::Runtime;
 
@@ -30,8 +29,6 @@ lazy_static! {
 // TODO: https://docs.rs/hyper/0.12.29/hyper/rt/trait.Stream.html#method.buffered
 
 fn small_file_par_vs_seq(c: &mut Criterion) {
-    static PIECE_SIZE: u64 = 32_768;
-
     c.bench(
         "download small file",
         ParameterizedBenchmark::new(
@@ -39,11 +36,7 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let mut rt = Runtime::new().unwrap();
-                    let result = download::fetch_seq(
-                        black_box(&SEQ_CLIENT),
-                        black_box(&SMALL_FILE_URL),
-                        black_box(&PATH),
-                    );
+                    let result = download::fetch_seq(&SEQ_CLIENT, &SMALL_FILE_URL, &PATH);
                     rt.block_on(result).unwrap();
                     std::fs::remove_file(&PATH).unwrap();
                 })
@@ -53,13 +46,8 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
         .with_function("in parallel", |b, _| {
             b.iter(|| {
                 let mut rt = Runtime::new().unwrap();
-                let result = download::fetch_par(
-                    black_box(&PAR_CLIENT),
-                    black_box(&SMALL_FILE_URL),
-                    black_box(SMALL_FILE_SIZE),
-                    black_box(PIECE_SIZE),
-                    black_box(&PATH),
-                );
+                let result =
+                    download::fetch_par(&PAR_CLIENT, &SMALL_FILE_URL, SMALL_FILE_SIZE, &PATH);
                 rt.block_on(result).unwrap();
                 std::fs::remove_file(&PATH).unwrap();
             })
@@ -69,8 +57,6 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
 }
 
 fn medium_file_par_vs_seq(c: &mut Criterion) {
-    static PIECE_SIZE: u64 = 32_768;
-
     c.bench(
         "download medium-sized file",
         ParameterizedBenchmark::new(
@@ -78,11 +64,7 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let mut rt = Runtime::new().unwrap();
-                    let result = download::fetch_seq(
-                        black_box(&SEQ_CLIENT),
-                        black_box(&MEDIUM_FILE_URL),
-                        black_box(&PATH),
-                    );
+                    let result = download::fetch_seq(&SEQ_CLIENT, &MEDIUM_FILE_URL, &PATH);
                     rt.block_on(result).unwrap();
                     std::fs::remove_file(&PATH).unwrap();
                 })
@@ -92,13 +74,8 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
         .with_function("in parallel", |b, _| {
             b.iter(|| {
                 let mut rt = Runtime::new().unwrap();
-                let result = download::fetch_par(
-                    black_box(&PAR_CLIENT),
-                    black_box(&MEDIUM_FILE_URL),
-                    black_box(MEDIUM_FILE_SIZE),
-                    black_box(PIECE_SIZE),
-                    black_box(&PATH),
-                );
+                let result =
+                    download::fetch_par(&PAR_CLIENT, &MEDIUM_FILE_URL, MEDIUM_FILE_SIZE, &PATH);
                 rt.block_on(result).unwrap();
                 std::fs::remove_file(&PATH).unwrap();
             })
@@ -108,8 +85,6 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
 }
 
 fn large_file_par_vs_seq(c: &mut Criterion) {
-    static PIECE_SIZE: u64 = 524_288;
-
     c.bench(
         "download large file",
         ParameterizedBenchmark::new(
@@ -117,11 +92,7 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let mut rt = Runtime::new().unwrap();
-                    let result = download::fetch_seq(
-                        black_box(&SEQ_CLIENT),
-                        black_box(&LARGE_FILE_URL),
-                        black_box(&PATH),
-                    );
+                    let result = download::fetch_seq(&SEQ_CLIENT, &LARGE_FILE_URL, &PATH);
                     rt.block_on(result).unwrap();
                     std::fs::remove_file(&PATH).unwrap();
                 })
@@ -131,13 +102,8 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
         .with_function("in parallel", |b, _| {
             b.iter(|| {
                 let mut rt = Runtime::new().unwrap();
-                let result = download::fetch_par(
-                    black_box(&PAR_CLIENT),
-                    black_box(&LARGE_FILE_URL),
-                    black_box(LARGE_FILE_SIZE),
-                    black_box(PIECE_SIZE),
-                    black_box(&PATH),
-                );
+                let result =
+                    download::fetch_par(&PAR_CLIENT, &LARGE_FILE_URL, LARGE_FILE_SIZE, &PATH);
                 rt.block_on(result).unwrap();
                 std::fs::remove_file(&PATH).unwrap();
             })
@@ -146,36 +112,10 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
     );
 }
 
-fn piece_size(c: &mut Criterion) {
-    c.bench(
-        "download medium-sized file",
-        ParameterizedBenchmark::new(
-            "in parallel, with different piece sizes",
-            |b, i| {
-                b.iter(|| {
-                    let mut rt = Runtime::new().unwrap();
-                    let result = download::fetch_par(
-                        black_box(&SEQ_CLIENT),
-                        black_box(&MEDIUM_FILE_URL),
-                        black_box(MEDIUM_FILE_SIZE),
-                        black_box(*i),
-                        black_box(&PATH),
-                    );
-                    rt.block_on(result).unwrap();
-                    std::fs::remove_file(&PATH).unwrap();
-                })
-            },
-            vec![16_384, 32_768, 65_536],
-        )
-        .sample_size(5),
-    );
-}
-
 criterion_group!(
     benches,
-    // small_file_par_vs_seq,
-    //medium_file_par_vs_seq,
-    // large_file_par_vs_seq,
-    piece_size
+    small_file_par_vs_seq,
+    medium_file_par_vs_seq,
+    large_file_par_vs_seq,
 );
 criterion_main!(benches);
