@@ -160,11 +160,8 @@ pub fn get_piece_size(_file_size: u64) -> u64 {
     4096
 }
 
-fn gen_offsets(
-    file_size: u64,
-    piece_size: u64,
-) -> impl Stream<Item = u64, Error = ()> {
-        stream::iter_ok::<_, ()>((0..file_size).step_by(piece_size as usize)),
+fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error = ()> {
+    stream::iter_ok::<_, ()>((0..file_size).step_by(piece_size as usize))
 }
 
 #[cfg(test)]
@@ -219,7 +216,7 @@ mod download_tests {
     #[test]
     fn downloading_file_in_parallel() {
         static PATH: &'static str = "data/foo_par.pdf";
-        let piece_size = 4096;
+        let piece_size = 8192;
 
         let mut rt = Runtime::new().unwrap();
 
