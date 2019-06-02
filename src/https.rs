@@ -4,14 +4,14 @@ use hyper::Body;
 use hyper_tls::HttpsConnector;
 
 pub type HttpsClient = Client<HttpsConnector<HttpConnector>, Body>;
-pub const DEFAULT_POOL_SIZE: usize = 4;
+pub const DEFAULT_THREAD_POOL_SIZE: usize = 8;
 
 pub fn get_client() -> HttpsClient {
-    get_client_of(DEFAULT_POOL_SIZE)
+    get_client_of(DEFAULT_THREAD_POOL_SIZE)
 }
 
-pub fn get_client_of(cnxns: usize) -> HttpsClient {
-    let mut https = HttpsConnector::new(cnxns).expect("TLS initialization failed");
+pub fn get_client_of(thread_pool_size: usize) -> HttpsClient {
+    let mut https = HttpsConnector::new(thread_pool_size).expect("TLS initialization failed");
     https.https_only(true);
     Client::builder().build::<_, hyper::Body>(https)
 }

@@ -1,0 +1,6 @@
+group,function,value,sample_time_nanos,iteration_count
+download medium-sized file,in sequence,,102521219977.0,1
+download medium-sized file,in sequence,,222359152543.0,2
+download medium-sized file,in sequence,,317088644821.0,3
+download medium-sized file,in sequence,,423059317568.0,4
+download medium-sized file,in sequence,,573139376245.0,5

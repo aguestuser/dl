@@ -20,12 +20,12 @@ impl<T: AsRef<Path> + Send + Sync + Display + 'static> ThreadsafePath for T {}
 /// given:a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path
 /// download the entire file in sequence and store it to disk
 /// NOTE: this function is provided mainly for benchmarking comparison with its parallel counterpart
-pub fn download_file_seq<P: ThreadsafePath>(
+pub fn fetch_seq<P: ThreadsafePath>(
     client: &HttpsClient,
-    uri: Uri,
+    uri: &'static str,
     path: &'static P,
 ) -> Box<Future<Item = (), Error = DlError> + Send> {
-    // TODO: consider moving Uri parsing logic inside this function
+    let uri = Uri::from_static(uri);
     let response = client.get(uri).map_err(DlError::Hyper);
     let file = File::create(path).map_err(DlError::Io);
     Box::new(
@@ -39,17 +39,17 @@ pub fn download_file_seq<P: ThreadsafePath>(
 /// - create an empty file of the correct size on the local file system
 /// - download pieces of the file in parallel
 /// - write each piece to the correct offset in the blank file (also in parallel)
-pub fn download_file_par<'a, 'b, P: ThreadsafePath>(
+pub fn fetch_par<'a, 'b, P: ThreadsafePath>(
     client: &'a HttpsClient,
-    uri: Uri,
+    uri: &'static str,
     file_size: u64,
     piece_size: u64,
     path: &'static P,
 ) -> impl Future<Item = bool, Error = DlError> + Send + 'a {
     // TODO:
-    // - consider moving Uri parsing logic inside this function
     // - return error if zeroed-out file is wrong size
     // - make several rounds of downloads (retrying on error)
+    let uri = Uri::from_static(uri);
     create_blank_file(file_size, path).and_then(move |_file_size| {
         gen_offsets(file_size, piece_size)
             .map(move |offset| download_piece(client, &uri, file_size, piece_size, offset, path))
@@ -155,12 +155,16 @@ pub fn get_file_size(file: File) -> impl Future<Item = u64, Error = DlError> + S
 
 /// TODO: determine optimal piece size for given file size according to these norms:
 /// http://wiki.depthstrike.com/index.php/Recommendations#Torrent_Piece_Sizes_when_making_torrents
+
 pub fn get_piece_size(_file_size: u64) -> u64 {
     4096
 }
 
-fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error = ()> {
-    stream::iter_ok::<_, ()>((0..file_size).step_by(piece_size as usize))
+fn gen_offsets(
+    file_size: u64,
+    piece_size: u64,
+) -> impl Stream<Item = u64, Error = ()> {
+        stream::iter_ok::<_, ()>((0..file_size).step_by(piece_size as usize)),
 }
 
 #[cfg(test)]
@@ -185,15 +189,14 @@ mod download_tests {
     #[test]
     fn downloading_file_in_sequence() {
         static PATH: &'static str = "data/foo_seq.pdf";
-        let uri = FILE_URL.parse::<Uri>().unwrap();
 
         let mut rt = Runtime::new().unwrap();
 
-        let result = download_file_seq(&CLIENT, uri, &PATH)
+        let result = fetch_seq(&CLIENT, &FILE_URL, &PATH)
             .and_then(|_| tokio_fs::metadata(PATH).map_err(DlError::Io))
             .map(|md| {
-                // when run in parallel, sometimes an extra 4096 bytes gets tacked on. weird!
-                // instead of worrying about that too much (just a code challenge, right?),
+                // when run with entire test suite, sometimes an extra 4096 bytes gets tacked on in this test.
+                // weird, huh? instead of worrying about that too much (just a code challenge, right?),
                 // let's just write at est that works for both cases...
                 match md.len() {
                     FILE_SIZE => {
@@ -207,29 +210,28 @@ mod download_tests {
                         md.len()
                     ),
                 }
-            })
-            .and_then(|_| tokio_fs::remove_file(PATH).map_err(|err| DlError::Io(err)));
+            });
 
         rt.block_on(result).unwrap();
+        std::fs::remove_file(PATH).unwrap();
     }
 
     #[test]
     fn downloading_file_in_parallel() {
         static PATH: &'static str = "data/foo_par.pdf";
-        let uri = FILE_URL.parse::<Uri>().unwrap();
-        let piece_size = get_piece_size(FILE_SIZE);
+        let piece_size = 4096;
 
         let mut rt = Runtime::new().unwrap();
 
-        let result = download_file_par(&CLIENT, uri, FILE_SIZE, piece_size, &PATH)
+        let result = fetch_par(&CLIENT, &FILE_URL, FILE_SIZE, piece_size, &PATH)
             .and_then(|_| tokio_fs::metadata(PATH).map_err(DlError::Io))
             .map(|md| {
                 assert_eq!(md.len(), FILE_SIZE);
                 assert!(checksum::md5sum_check(PATH, FILE_MD5_SUM).unwrap_or(false));
-            })
-            .and_then(|_| tokio_fs::remove_file(PATH).map_err(|err| DlError::Io(err)));
+            });
 
-        rt.block_on(result).map_err(|e| eprintln!("{}", e)).unwrap();
+        rt.block_on(result).unwrap();
+        std::fs::remove_file(PATH).unwrap();
     }
 
     #[test]
@@ -237,14 +239,13 @@ mod download_tests {
         static PATH: &'static str = "data/foo_blank.pdf";
         let mut rt = Runtime::new().unwrap();
 
-        let result = create_blank_file(1024, PATH)
-            .map(move |file_size| {
-                assert_eq!(file_size, 1024);
-                assert!(checksum::md5sum_check(&PATH, ZEROS_MD5_SUM).unwrap_or(false));
-            })
-            .and_then(move |_| tokio_fs::remove_file(&PATH).map_err(|err| DlError::Io(err)));
+        let result = create_blank_file(1024, PATH).map(move |file_size| {
+            assert_eq!(file_size, 1024);
+            assert!(checksum::md5sum_check(&PATH, ZEROS_MD5_SUM).unwrap_or(false));
+        });
 
         rt.block_on(result).unwrap();
+        std::fs::remove_file(PATH).unwrap();
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub enum DlError {
     RequestFailed(u16),
     Checksum,
     Io(std::io::Error),
+    InvalidUri(http::uri::InvalidUri),
     ParseContentLength,
     StreamProcessing,
     ValidFileMetadata,
@@ -25,6 +26,7 @@ impl fmt::Display for DlError {
         match *self {
             DlError::Http(ref err) => err.fmt(f),
             DlError::Hyper(ref err) => err.fmt(f),
+            DlError::InvalidUri(ref err) => err.fmt(f),
             DlError::Io(ref err) => err.fmt(f),
             DlError::Checksum => write!(f, "Failed checksum (hashing or hex encoding failed)"),
             DlError::ParseContentLength => write!(f, "Failed to parse content length header"),
@@ -40,6 +42,7 @@ impl Error for DlError {
         match *self {
             DlError::Http(ref err) => err.description(),
             DlError::Hyper(ref err) => err.description(),
+            DlError::InvalidUri(ref err) => err.description(),
             DlError::Io(ref err) => err.description(),
             DlError::Checksum => "Failed checksum (hashing or hex encoding failed)",
             DlError::ParseContentLength => "Failed to parse content length header",
@@ -47,6 +50,12 @@ impl Error for DlError {
             DlError::StreamProcessing => "Stream processing error",
             DlError::ValidFileMetadata => "File does not have valid metadata",
         }
+    }
+}
+
+impl From<http::uri::InvalidUri> for DlError {
+    fn from(cause: http::uri::InvalidUri) -> DlError {
+        DlError::InvalidUri(cause)
     }
 }
 

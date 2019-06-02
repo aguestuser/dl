@@ -6,10 +6,10 @@ edition = "2018"
 
 [dependencies]
 #hex-literal = "0.2.0"
+criterion = "0.2.11"
 futures = "0.1.27"
 hex = "0.3.2"
-# this is gross: we use http literally only for its error variant!
-http = "0.1.17"
+http = "0.1.17" # this is gross: we use http literally only for its error variant!
 hyper = "0.12"
 hyper-tls = "0.3.2"
 lazy_static = "1.2.0"
@@ -17,3 +17,7 @@ md-5 = "0.8.0"
 tokio = { version = "0.1.14", default-features = false, features = ["rt-full"] }
 tokio-fs = "0.1.6"
 tokio-io = "0.1.12"
+
+[[bench]]
+name = "dl_bench"
+harness = false
