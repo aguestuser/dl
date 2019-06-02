@@ -1,5 +1,5 @@
 [package]
-name = "downloader"
+name = "dl"
 version = "0.1.0"
 authors = ["aguestuser"]
 edition = "2018"
