@@ -6,6 +6,7 @@ use hyper_tls::HttpsConnector;
 pub type HttpsClient = Client<HttpsConnector<HttpConnector>, Body>;
 pub const DEFAULT_THREAD_POOL_SIZE: usize = 8;
 
+/// returns a (hyper) async https client with threadpool of size 8
 pub fn get_client() -> HttpsClient {
     get_client_of(DEFAULT_THREAD_POOL_SIZE)
 }

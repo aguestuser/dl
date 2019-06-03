@@ -1,5 +1,5 @@
 use crate::error::DlError;
-use crate::https::HttpsClient;
+use crate::https::{self, HttpsClient};
 use futures::{future, stream, Future, Stream};
 use hyper;
 use hyper::Response;
@@ -14,13 +14,10 @@ use tokio_io::AsyncWrite;
 /// given:a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path
 /// download the entire file in sequence and store it to disk
 /// NOTE: this function is provided mainly for benchmarking comparison with its parallel counterpart
-pub fn fetch_seq<'a, F>(
-    client: &HttpsClient,
-    uri: Uri,
-    path: PathBuf,
-) -> Box<Future<Item = (), Error = DlError> + Send + 'a> {
+pub fn fetch_seq(uri: Uri, path: PathBuf) -> Box<Future<Item = (), Error = DlError> + Send> {
+    let client = https::get_client();
     let response = client.get(uri).map_err(DlError::Hyper);
-    let file = File::create(path.join("")).map_err(DlError::Io);
+    let file = File::create(path.into_os_string()).map_err(DlError::Io);
     Box::new(
         response
             .join(file)
@@ -33,7 +30,6 @@ pub fn fetch_seq<'a, F>(
 /// - download pieces of the file in parallel
 /// - write each piece to the correct offset in the blank file (also in parallel)
 pub fn fetch_par(
-    client: HttpsClient,
     uri: Uri,
     path: PathBuf,
     file_size: u64,
@@ -47,10 +43,13 @@ pub fn fetch_par(
     //   - caused by hyper keeping too many sockets open as http request speed exceeds file write speed
     //   - see (e.g.): https://github.com/seanmonstar/reqwest/issues/386#issuecomment-440891158
     //   - fix: buffer the stream (blockers: the types for that are hard!)
+    let client = https::get_client();
     let piece_size = calc_piece_size(file_size);
     create_blank_file(file_size, path.clone()).and_then(move |_file_size| {
         gen_offsets(file_size, piece_size)
-            .map(move |offset| download_piece(&client, &uri, file_size, piece_size, offset, &path))
+            .map(move |offset| {
+                download_piece(&client, &uri, file_size, piece_size, offset, path.clone())
+            })
             .map_err(|_| DlError::StreamProcessing)
             .collect()
             .and_then(|dl_jobs| future::join_all(dl_jobs))
@@ -80,7 +79,7 @@ pub fn download_piece<'a>(
     file_size: u64,
     piece_size: u64,
     offset: u64,
-    path: &PathBuf,
+    path: PathBuf,
 ) -> Box<Future<Item = u64, Error = DlError> + Send> {
     match build_range_request(uri, file_size, piece_size, offset) {
         Err(err) => Box::new(future::err(err)),
@@ -88,7 +87,7 @@ pub fn download_piece<'a>(
             let response = client.request(req).map_err(|err| DlError::Hyper(err));
             let file = OpenOptions::new()
                 .write(true)
-                .open(path.join(""))
+                .open(path.into_os_string())
                 .map_err(DlError::Io);
             Box::new(
                 response
@@ -185,7 +184,6 @@ fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error
 mod download_tests {
     use super::*;
     use crate::checksum;
-    use crate::https;
     use tokio::runtime::Runtime;
 
     const FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
@@ -197,22 +195,26 @@ mod download_tests {
 
     #[test]
     fn downloading_file_in_sequence() {
-        static PATH: &'static str = "data/foo_seq.pdf";
-        let client = https::get_client();
+        let uri = FILE_URL.parse::<Uri>().unwrap();
+        let path = PathBuf::from("data/foo_seq.pdf");
         let mut rt = Runtime::new().unwrap();
 
-        let result = fetch_seq(&client, &FILE_URL, &PATH)
-            .and_then(|_| tokio_fs::metadata(PATH).map_err(DlError::Io))
+        // TODO: alleviate the need for all this cloning by making a Downloader struct to own client, uri, etc...
+        let result = fetch_seq(uri, path.clone())
+            .and_then(move |_| {
+                tokio_fs::metadata(PathBuf::from("data/foo_seq.pdf")).map_err(DlError::Io)
+            })
             .map(|md| {
                 // when run with entire test suite, sometimes an extra 4096 bytes gets tacked on in this test.
                 // weird, huh? instead of worrying about that too much (just a code challenge, right?),
                 // let's just write at est that works for both cases...
+                let path = PathBuf::from("data/foo_seq.pdf");
                 match md.len() {
                     FILE_SIZE => {
-                        assert!(checksum::md5sum_check(PATH, FILE_MD5_SUM).unwrap_or(false))
+                        assert!(checksum::md5sum_check(&path, FILE_MD5_SUM).unwrap_or(false))
                     }
                     PADDED_FILE_SIZE => {
-                        assert!(checksum::md5sum_check(PATH, PADDED_FILE_MD5_SUM).unwrap_or(false))
+                        assert!(checksum::md5sum_check(&path, PADDED_FILE_MD5_SUM).unwrap_or(false))
                     }
                     _ => panic!(
                         "File download wrote wrong number or order of bytes. File size: {}",
@@ -222,40 +224,46 @@ mod download_tests {
             });
 
         rt.block_on(result).unwrap();
-        std::fs::remove_file(PATH).unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
     fn downloading_file_in_parallel() {
-        static PATH: &'static Path = Path::new("data/foo_par.pdf");
-        lazy_static! {
-            static ref CLIENT: HttpsClient = { https::get_client() };
-        }
+        let uri = FILE_URL.parse::<Uri>().unwrap();
+        let path = PathBuf::from("data/foo_par.pdf");
         let mut rt = Runtime::new().unwrap();
 
-        let result = fetch_par(&CLIENT, &FILE_URL, &PATH, FILE_SIZE)
-            .and_then(|_| tokio_fs::metadata(PATH).map_err(DlError::Io))
+        let result = fetch_par(uri, path.clone(), FILE_SIZE)
+            .and_then(|_| {
+                tokio_fs::metadata(PathBuf::from("data/foo_par.pdf")).map_err(DlError::Io)
+            })
             .map(|md| {
                 assert_eq!(md.len(), FILE_SIZE);
-                assert!(checksum::md5sum_check(PATH, FILE_MD5_SUM).unwrap_or(false));
+                assert!(
+                    checksum::md5sum_check(&PathBuf::from("data/foo_par.pdf"), FILE_MD5_SUM)
+                        .unwrap_or(false)
+                );
             });
 
         rt.block_on(result).unwrap();
-        std::fs::remove_file(PATH).unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
     fn creating_blank_file() {
-        static PATH: &'static str = "data/foo_blank.pdf";
+        let path = PathBuf::from("data/foo_blank.pdf");
         let mut rt = Runtime::new().unwrap();
 
-        let result = create_blank_file(1024, PATH).map(move |file_size| {
+        let result = create_blank_file(1024, path.clone()).map(move |file_size| {
             assert_eq!(file_size, 1024);
-            assert!(checksum::md5sum_check(&PATH, ZEROS_MD5_SUM).unwrap_or(false));
+            assert!(
+                checksum::md5sum_check(&PathBuf::from("data/foo_blank.pdf"), ZEROS_MD5_SUM)
+                    .unwrap_or(false)
+            );
         });
 
         rt.block_on(result).unwrap();
-        std::fs::remove_file(PATH).unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

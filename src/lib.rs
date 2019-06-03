@@ -2,9 +2,9 @@
 #[macro_use]
 extern crate lazy_static;
 
-use futures::Future;
-use hyper::{rt, Uri};
-use metadata::FileMetadata;
+use error::DlError;
+use futures::{future, Future};
+use hyper::Uri;
 use std::path::PathBuf;
 
 pub mod checksum;
@@ -40,20 +40,15 @@ impl Config {
     }
 }
 
-pub fn run(cfg: Config) -> () {
-    let Config { path, uri } = cfg;
-    rt::run(rt::lazy(|| {
-        let client = https::get_client();
+pub fn run(Config { path, uri }: Config) -> Box<impl Future<Item = (), Error = DlError>> {
+    // try to fetch metadata
+    // if found fetch file
+    // if downloaded and etag avail, check etag
+    // if all succeeds, print path to open file and exit
 
-        // try to fetch metadata
-
-        // if found fetch file
-        download::fetch_par(client, uri, path, 40)
-            .map(|_| ())
-            .map_err(|_| ())
-
-        // if downloaded and etag avail, check etag
-
-        // if all succeeds, print path to open file and exit
-    }));
+    Box::new(
+        download::fetch_par(uri.clone(), path.clone(), 40)
+            .and_then(move |_| download::fetch_par(uri.clone(), path.clone(), 40))
+            .and_then(move |_| future::ok(())),
+    )
 }
