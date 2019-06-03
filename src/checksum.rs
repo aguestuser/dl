@@ -3,8 +3,10 @@ use hex;
 use md5::{Digest, Md5};
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 
-pub fn md5sum(path: &str) -> Result<Vec<u8>, DlError> {
+// TODO: this should take a PathBuf
+pub fn md5sum(path: &Path) -> Result<Vec<u8>, DlError> {
     let mut buffer = Vec::new();
     let mut f = File::open(path)?;
     f.read_to_end(&mut buffer)?;
@@ -14,7 +16,7 @@ pub fn md5sum(path: &str) -> Result<Vec<u8>, DlError> {
     Ok(hasher.result().to_vec())
 }
 
-pub fn md5sum_check(path: &str, sum_hex: &str) -> Result<bool, DlError> {
+pub fn md5sum_check(path: &Path, sum_hex: &str) -> Result<bool, DlError> {
     md5sum(path)
         .iter()
         .zip(hex::decode(sum_hex).iter())
@@ -30,7 +32,7 @@ mod checksum_tests {
     #[test]
     fn taking_m5sum() {
         assert_eq!(
-            md5sum("data/foo.txt").unwrap(),
+            md5sum(Path::new("data/foo.txt")).unwrap(),
             hex::decode("d3b07384d113edec49eaa6238ad5ff00").unwrap(),
         );
     }
@@ -38,7 +40,11 @@ mod checksum_tests {
     #[test]
     fn checking_md5sum() {
         assert_eq!(
-            md5sum_check("data/foo.txt", "d3b07384d113edec49eaa6238ad5ff00").unwrap(),
+            md5sum_check(
+                Path::new("data/foo.txt"),
+                "d3b07384d113edec49eaa6238ad5ff00"
+            )
+            .unwrap(),
             true,
         )
     }

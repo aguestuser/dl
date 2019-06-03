@@ -5,29 +5,22 @@ use hyper;
 use hyper::Response;
 use hyper::{Body, Request, Uri};
 use std::cmp::min;
-use std::fmt::Display;
 use std::io::SeekFrom;
-use std::path::Path;
+use std::path::PathBuf;
 use tokio_fs::{File, OpenOptions};
 use tokio_io::io;
 use tokio_io::AsyncWrite;
 
-// the trait bound describing a typesafe static string to be interpreted as a path by tokio_io
-// (it's a mouthful, so we alias it)
-pub trait ThreadsafePath: AsRef<Path> + Send + Sync + Display + 'static {}
-impl<T: AsRef<Path> + Send + Sync + Display + 'static> ThreadsafePath for T {}
-
 /// given:a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path
 /// download the entire file in sequence and store it to disk
 /// NOTE: this function is provided mainly for benchmarking comparison with its parallel counterpart
-pub fn fetch_seq<P: ThreadsafePath>(
+pub fn fetch_seq<'a, F>(
     client: &HttpsClient,
-    uri: &'static str,
-    path: &'static P,
-) -> Box<Future<Item = (), Error = DlError> + Send> {
-    let uri = Uri::from_static(uri);
+    uri: Uri,
+    path: PathBuf,
+) -> Box<Future<Item = (), Error = DlError> + Send + 'a> {
     let response = client.get(uri).map_err(DlError::Hyper);
-    let file = File::create(path).map_err(DlError::Io);
+    let file = File::create(path.join("")).map_err(DlError::Io);
     Box::new(
         response
             .join(file)
@@ -39,12 +32,12 @@ pub fn fetch_seq<P: ThreadsafePath>(
 /// - create an empty file of the correct size on the local file system
 /// - download pieces of the file in parallel
 /// - write each piece to the correct offset in the blank file (also in parallel)
-pub fn fetch_par<'a, P: ThreadsafePath>(
-    client: &'a HttpsClient,
-    uri: &'static str,
+pub fn fetch_par(
+    client: HttpsClient,
+    uri: Uri,
+    path: PathBuf,
     file_size: u64,
-    path: &'static P,
-) -> impl Future<Item = bool, Error = DlError> + Send + 'a {
+) -> impl Future<Item = bool, Error = DlError> + Send {
     // TODO:
     // - (1) increase fault tolerance by:
     //   - make several rounds of downloads (inspecting completed futures for success/error retrying all failed requests/writes)
@@ -54,11 +47,10 @@ pub fn fetch_par<'a, P: ThreadsafePath>(
     //   - caused by hyper keeping too many sockets open as http request speed exceeds file write speed
     //   - see (e.g.): https://github.com/seanmonstar/reqwest/issues/386#issuecomment-440891158
     //   - fix: buffer the stream (blockers: the types for that are hard!)
-    let uri = Uri::from_static(uri);
     let piece_size = calc_piece_size(file_size);
-    create_blank_file(file_size, path).and_then(move |_file_size| {
+    create_blank_file(file_size, path.clone()).and_then(move |_file_size| {
         gen_offsets(file_size, piece_size)
-            .map(move |offset| download_piece(client, &uri, file_size, piece_size, offset, path))
+            .map(move |offset| download_piece(&client, &uri, file_size, piece_size, offset, &path))
             .map_err(|_| DlError::StreamProcessing)
             .collect()
             .and_then(|dl_jobs| future::join_all(dl_jobs))
@@ -67,10 +59,10 @@ pub fn fetch_par<'a, P: ThreadsafePath>(
 }
 
 /// creates a file of `size` bytes at `path`, containing repeated null bytes
-fn create_blank_file<P: ThreadsafePath>(
+fn create_blank_file<'a>(
     size: u64,
-    path: P,
-) -> impl Future<Item = u64, Error = DlError> {
+    path: PathBuf,
+) -> impl Future<Item = u64, Error = DlError> + 'a {
     File::create(path)
         .map_err(DlError::Io)
         .and_then(move |file| {
@@ -82,13 +74,13 @@ fn create_blank_file<P: ThreadsafePath>(
         })
 }
 
-pub fn download_piece<'a, P: ThreadsafePath>(
+pub fn download_piece<'a>(
     client: &HttpsClient,
     uri: &Uri,
     file_size: u64,
     piece_size: u64,
     offset: u64,
-    path: P,
+    path: &PathBuf,
 ) -> Box<Future<Item = u64, Error = DlError> + Send> {
     match build_range_request(uri, file_size, piece_size, offset) {
         Err(err) => Box::new(future::err(err)),
@@ -96,7 +88,7 @@ pub fn download_piece<'a, P: ThreadsafePath>(
             let response = client.request(req).map_err(|err| DlError::Hyper(err));
             let file = OpenOptions::new()
                 .write(true)
-                .open(path)
+                .open(path.join(""))
                 .map_err(DlError::Io);
             Box::new(
                 response
@@ -235,13 +227,13 @@ mod download_tests {
 
     #[test]
     fn downloading_file_in_parallel() {
-        static PATH: &'static str = "data/foo_par.pdf";
+        static PATH: &'static Path = Path::new("data/foo_par.pdf");
         lazy_static! {
             static ref CLIENT: HttpsClient = { https::get_client() };
         }
         let mut rt = Runtime::new().unwrap();
 
-        let result = fetch_par(&CLIENT, &FILE_URL, FILE_SIZE, &PATH)
+        let result = fetch_par(&CLIENT, &FILE_URL, &PATH, FILE_SIZE)
             .and_then(|_| tokio_fs::metadata(PATH).map_err(DlError::Io))
             .map(|md| {
                 assert_eq!(md.len(), FILE_SIZE);

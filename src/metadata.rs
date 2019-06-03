@@ -35,14 +35,17 @@ pub fn fetch_head(
     client: &HttpsClient,
     uri: Uri,
 ) -> impl Future<Item = Result<FileMetadata, DlError>, Error = HyperError> {
+    // TODO: this should have signature Future<Item = FileMetadata, Error = DlError>
     let req = Request::builder()
         .uri(&uri)
         .method(Method::HEAD)
         .body(Body::empty())
         .expect("Failed to build request object");
 
+    // will require making this an and_then not a map
     client.request(req).map(|res| {
         let (status, headers) = (res.status(), res.headers());
+        // and munging types to return appropriate futures here
         is_success(status)
             .and_then(|_| have_file_metadata(headers))
             .and_then(|_| parse_file_metadata(headers))
