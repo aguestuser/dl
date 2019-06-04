@@ -9,7 +9,7 @@ use dl::{file, https};
 use file::FileDownloader;
 use https::HttpsClient;
 use hyper::Uri;
-use std::ffi::OsString;
+use std::path::PathBuf;
 use tokio::runtime::Runtime;
 
 static PATH: &'static str = "data/foo.pdf";
@@ -37,7 +37,7 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
                     let res = FileDownloader {
                         client: https::get_client(),
                         uri: SMALL_FILE_URL.parse::<Uri>().unwrap(),
-                        path: OsString::from(PATH),
+                        path: PathBuf::from(PATH),
                         file_size: 0,
                         etag: None,
                     }
@@ -54,7 +54,7 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
                 let res = FileDownloader {
                     client: https::get_client(),
                     uri: SMALL_FILE_URL.parse::<Uri>().unwrap(),
-                    path: OsString::from(PATH),
+                    path: PathBuf::from(PATH),
                     file_size: SMALL_FILE_SIZE,
                     etag: None,
                 }
@@ -78,7 +78,7 @@ fn medium_file_par(c: &mut Criterion) {
                     let res = FileDownloader {
                         client: https::get_client(),
                         uri: MEDIUM_FILE_URL.parse::<Uri>().unwrap(),
-                        path: OsString::from(PATH),
+                        path: PathBuf::from(PATH),
                         file_size: MEDIUM_FILE_SIZE,
                         etag: None,
                     }
@@ -104,7 +104,7 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
                     let res = FileDownloader {
                         client: https::get_client(),
                         uri: MEDIUM_FILE_URL.parse::<Uri>().unwrap(),
-                        path: OsString::from(PATH),
+                        path: PathBuf::from(PATH),
                         file_size: 0,
                         etag: None,
                     }
@@ -121,7 +121,7 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
                 let res = FileDownloader {
                     client: https::get_client(),
                     uri: MEDIUM_FILE_URL.parse::<Uri>().unwrap(),
-                    path: OsString::from(PATH),
+                    path: PathBuf::from(PATH),
                     file_size: MEDIUM_FILE_SIZE,
                     etag: None,
                 }
@@ -145,7 +145,7 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
                     let res = FileDownloader {
                         client: https::get_client(),
                         uri: LARGE_FILE_URL.parse::<Uri>().unwrap(),
-                        path: OsString::from(PATH),
+                        path: PathBuf::from(PATH),
                         file_size: 0,
                         etag: None,
                     }
@@ -162,7 +162,7 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
                 let res = FileDownloader {
                     client: https::get_client(),
                     uri: LARGE_FILE_URL.parse::<Uri>().unwrap(),
-                    path: OsString::from(PATH),
+                    path: PathBuf::from(PATH),
                     file_size: LARGE_FILE_SIZE,
                     etag: None,
                 }
@@ -186,7 +186,7 @@ fn large_file_par(c: &mut Criterion) {
                     let res = FileDownloader {
                         client: https::get_client(),
                         uri: LARGE_FILE_URL.parse::<Uri>().unwrap(),
-                        path: OsString::from(PATH),
+                        path: PathBuf::from(PATH),
                         file_size: LARGE_FILE_SIZE,
                         etag: None,
                     }
@@ -204,7 +204,7 @@ fn large_file_par(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    small_file_par_vs_seq,
+    // small_file_par_vs_seq,
     //medium_file_par,
     medium_file_par_vs_seq,
     // large_file_par_vs_seq,
