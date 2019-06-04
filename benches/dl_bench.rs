@@ -5,8 +5,11 @@ extern crate criterion;
 extern crate lazy_static;
 
 use criterion::{Criterion, ParameterizedBenchmark};
-use dl::{download, https};
+use dl::{file, https};
+use file::FileDownloader;
 use https::HttpsClient;
+use hyper::Uri;
+use std::ffi::OsString;
 use tokio::runtime::Runtime;
 
 static PATH: &'static str = "data/foo.pdf";
@@ -22,10 +25,6 @@ static LARGE_FILE_URL: &'static str =
     "https://s3.amazonaws.com/ryft-public-sample-data/ODBC/SampleDatabases_3.0.tar.gz";
 static LARGE_FILE_SIZE: u64 = 637_828_873;
 
-lazy_static! {
-    pub static ref PAR_CLIENT: HttpsClient = { https::get_client() };
-    pub static ref SEQ_CLIENT: HttpsClient = { https::get_client() };
-}
 // TODO: https://docs.rs/hyper/0.12.29/hyper/rt/trait.Stream.html#method.buffered
 
 fn small_file_par_vs_seq(c: &mut Criterion) {
@@ -35,9 +34,16 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
             "in sequence",
             |b, _| {
                 b.iter(|| {
-                    let mut rt = Runtime::new().unwrap();
-                    let result = download::fetch_seq(&SEQ_CLIENT, &SMALL_FILE_URL, &PATH);
-                    rt.block_on(result).unwrap();
+                    let res = FileDownloader {
+                        client: https::get_client(),
+                        uri: SMALL_FILE_URL.parse::<Uri>().unwrap(),
+                        path: OsString::from(PATH),
+                        file_size: 0,
+                        etag: None,
+                    }
+                    .fetch_seq();
+
+                    Runtime::new().unwrap().block_on(res).unwrap();
                     std::fs::remove_file(&PATH).unwrap();
                 })
             },
@@ -45,10 +51,16 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
         )
         .with_function("in parallel", |b, _| {
             b.iter(|| {
-                let mut rt = Runtime::new().unwrap();
-                let result =
-                    download::fetch_par(&PAR_CLIENT, &SMALL_FILE_URL, SMALL_FILE_SIZE, &PATH);
-                rt.block_on(result).unwrap();
+                let res = FileDownloader {
+                    client: https::get_client(),
+                    uri: SMALL_FILE_URL.parse::<Uri>().unwrap(),
+                    path: OsString::from(PATH),
+                    file_size: SMALL_FILE_SIZE,
+                    etag: None,
+                }
+                .fetch();
+
+                Runtime::new().unwrap().block_on(res).unwrap();
                 std::fs::remove_file(&PATH).unwrap();
             })
         })
@@ -56,16 +68,49 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
     );
 }
 
+fn medium_file_par(c: &mut Criterion) {
+    c.bench(
+        "download medium file",
+        ParameterizedBenchmark::new(
+            "in parallel",
+            |b, _| {
+                b.iter(|| {
+                    let res = FileDownloader {
+                        client: https::get_client(),
+                        uri: MEDIUM_FILE_URL.parse::<Uri>().unwrap(),
+                        path: OsString::from(PATH),
+                        file_size: MEDIUM_FILE_SIZE,
+                        etag: None,
+                    }
+                    .fetch();
+
+                    Runtime::new().unwrap().block_on(res).unwrap();
+                    std::fs::remove_file(&PATH).unwrap();
+                })
+            },
+            vec![0],
+        )
+        .sample_size(2),
+    );
+}
+
 fn medium_file_par_vs_seq(c: &mut Criterion) {
     c.bench(
-        "download medium-sized file",
+        "download medium file",
         ParameterizedBenchmark::new(
             "in sequence",
             |b, _| {
                 b.iter(|| {
-                    let mut rt = Runtime::new().unwrap();
-                    let result = download::fetch_seq(&SEQ_CLIENT, &MEDIUM_FILE_URL, &PATH);
-                    rt.block_on(result).unwrap();
+                    let res = FileDownloader {
+                        client: https::get_client(),
+                        uri: MEDIUM_FILE_URL.parse::<Uri>().unwrap(),
+                        path: OsString::from(PATH),
+                        file_size: 0,
+                        etag: None,
+                    }
+                    .fetch_seq();
+
+                    Runtime::new().unwrap().block_on(res).unwrap();
                     std::fs::remove_file(&PATH).unwrap();
                 })
             },
@@ -73,14 +118,20 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
         )
         .with_function("in parallel", |b, _| {
             b.iter(|| {
-                let mut rt = Runtime::new().unwrap();
-                let result =
-                    download::fetch_par(&PAR_CLIENT, &MEDIUM_FILE_URL, MEDIUM_FILE_SIZE, &PATH);
-                rt.block_on(result).unwrap();
+                let res = FileDownloader {
+                    client: https::get_client(),
+                    uri: MEDIUM_FILE_URL.parse::<Uri>().unwrap(),
+                    path: OsString::from(PATH),
+                    file_size: MEDIUM_FILE_SIZE,
+                    etag: None,
+                }
+                .fetch();
+
+                Runtime::new().unwrap().block_on(res).unwrap();
                 std::fs::remove_file(&PATH).unwrap();
             })
         })
-        .sample_size(5),
+        .sample_size(2),
     );
 }
 
@@ -91,9 +142,16 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
             "in sequence",
             |b, _| {
                 b.iter(|| {
-                    let mut rt = Runtime::new().unwrap();
-                    let result = download::fetch_seq(&SEQ_CLIENT, &LARGE_FILE_URL, &PATH);
-                    rt.block_on(result).unwrap();
+                    let res = FileDownloader {
+                        client: https::get_client(),
+                        uri: LARGE_FILE_URL.parse::<Uri>().unwrap(),
+                        path: OsString::from(PATH),
+                        file_size: 0,
+                        etag: None,
+                    }
+                    .fetch_seq();
+
+                    Runtime::new().unwrap().block_on(res).unwrap();
                     std::fs::remove_file(&PATH).unwrap();
                 })
             },
@@ -101,10 +159,16 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
         )
         .with_function("in parallel", |b, _| {
             b.iter(|| {
-                let mut rt = Runtime::new().unwrap();
-                let result =
-                    download::fetch_par(&PAR_CLIENT, &LARGE_FILE_URL, LARGE_FILE_SIZE, &PATH);
-                rt.block_on(result).unwrap();
+                let res = FileDownloader {
+                    client: https::get_client(),
+                    uri: LARGE_FILE_URL.parse::<Uri>().unwrap(),
+                    path: OsString::from(PATH),
+                    file_size: LARGE_FILE_SIZE,
+                    etag: None,
+                }
+                .fetch();
+
+                Runtime::new().unwrap().block_on(res).unwrap();
                 std::fs::remove_file(&PATH).unwrap();
             })
         })
@@ -112,10 +176,38 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
     );
 }
 
+fn large_file_par(c: &mut Criterion) {
+    c.bench(
+        "download large file",
+        ParameterizedBenchmark::new(
+            "in sequence",
+            |b, _| {
+                b.iter(|| {
+                    let res = FileDownloader {
+                        client: https::get_client(),
+                        uri: LARGE_FILE_URL.parse::<Uri>().unwrap(),
+                        path: OsString::from(PATH),
+                        file_size: LARGE_FILE_SIZE,
+                        etag: None,
+                    }
+                    .fetch();
+
+                    Runtime::new().unwrap().block_on(res).unwrap();
+                    std::fs::remove_file(&PATH).unwrap();
+                })
+            },
+            vec![0],
+        )
+        .sample_size(2),
+    );
+}
+
 criterion_group!(
     benches,
     small_file_par_vs_seq,
+    //medium_file_par,
     medium_file_par_vs_seq,
-    large_file_par_vs_seq,
+    // large_file_par_vs_seq,
+    // large_file_par,
 );
 criterion_main!(benches);

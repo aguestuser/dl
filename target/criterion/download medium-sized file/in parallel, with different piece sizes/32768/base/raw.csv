@@ -1,3 +1,0 @@
-group,function,value,sample_time_nanos,iteration_count
-download medium-sized file,"in parallel, with different piece sizes",32768,36271016521.0,1
-download medium-sized file,"in parallel, with different piece sizes",32768,71081811299.0,2
