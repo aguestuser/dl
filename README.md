@@ -168,7 +168,7 @@ My main goal in building this project was to build something that was fast, but 
 
 On this score, I think I did okay. To make sure this was true, I performed some elementary profiling to compare the performance of my parallel solution with a straight-up `GET` request.
 
-The benchmarks from these profiling experiments live with the repo. You can view them in the browser with (for example):
+The benchmarks from these profiling experiments live with the repo. They were performed on an 8-core Lenovo X1 Carbon with 16GB of RAM running Debian Buster. You can view the reports from these benchmarks in the browser with (for example):
 
 ``` shell
 cd path/to/this/repo
@@ -179,11 +179,11 @@ The upshot is that the parallel solution performs increasingly better than its s
 
 For small files (on the order of 50KB) both solutions perform roughly the same: downloading files in ~400ms.
 
-For medium sized files (on the order of 50MB), the parallel solution outperforms its sequential counterpart by roughly 4x (15s vs 90s).
+For medium sized files (on the order of 50MB), the parallel solution outperforms its sequential counterpart by roughly 8x (13s vs 102s), which makes sense, since my machine has 8 cores.
 
 For large files (on the order of 500MB), I don't have any data available because my solution breaks at that scale.
 
-Given time, I would like to further develop the app to see whether the gains from parallelization scale quadratically, exponentially, etc. and whether they plateau at some point.
+Given time, I would like to further develop the app to see whether the gains from parallelization remain fixed in proportion to the number of cores on my machine or vary at all at different (larger) scales.
 
 # TODO <a name="todo"></a>
 
