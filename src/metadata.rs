@@ -1,11 +1,9 @@
 use crate::error::DlError;
 use crate::file::FileDownloader;
 use crate::https::{self, HttpsClient};
-use crate::DlConfig;
-use crate::Downloader;
+use crate::Config;
 use futures::future::IntoFuture;
 use hyper;
-use hyper::error::Error as HyperError;
 use hyper::header::HeaderValue;
 use hyper::rt::Future;
 use hyper::HeaderMap;
@@ -32,7 +30,7 @@ pub struct MetadataDownloader {
 
 impl MetadataDownloader {
     /// constructs a `MetadataDownloader` from a `Config` struct
-    pub fn from_config(cfg: DlConfig) -> MetadataDownloader {
+    pub fn from_config(cfg: Config) -> MetadataDownloader {
         Self {
             client: https::get_client(),
             uri: cfg.uri,
@@ -118,7 +116,6 @@ fn parse_etag(headers: &HeaderMap<HeaderValue>) -> Option<String> {
 mod metadata_tests {
     use super::*;
     use crate::https;
-    use futures::future;
     use std::error::Error;
     use tokio::runtime::Runtime;
 

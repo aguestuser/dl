@@ -10,6 +10,7 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum DlError {
+    EtagAbsent,
     Http(http::Error),
     Hyper(hyper::error::Error),
     RequestFailed(u16),
@@ -24,6 +25,7 @@ pub enum DlError {
 impl fmt::Display for DlError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
+            DlError::EtagAbsent => write!(f, "File does not have an etag"),
             DlError::Http(ref err) => err.fmt(f),
             DlError::Hyper(ref err) => err.fmt(f),
             DlError::InvalidUri(ref err) => err.fmt(f),
@@ -40,6 +42,7 @@ impl fmt::Display for DlError {
 impl Error for DlError {
     fn description(&self) -> &str {
         match *self {
+            DlError::EtagAbsent => "File does not have an etag",
             DlError::Http(ref err) => err.description(),
             DlError::Hyper(ref err) => err.description(),
             DlError::InvalidUri(ref err) => err.description(),

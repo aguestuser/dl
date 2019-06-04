@@ -1,5 +1,6 @@
+use crate::checksum::HashChecker;
 use crate::error::DlError;
-use crate::https::{self, HttpsClient};
+use crate::https::HttpsClient;
 use crate::metadata::Metadata;
 use crate::metadata::MetadataDownloader;
 use futures::{future, stream, Future, Stream};
@@ -9,7 +10,6 @@ use hyper::{Body, Request, Uri};
 use std::cmp::min;
 use std::ffi::OsString;
 use std::io::SeekFrom;
-use std::path::PathBuf;
 use tokio_fs::{File, OpenOptions};
 use tokio_io::io;
 use tokio_io::AsyncWrite;
@@ -54,48 +54,48 @@ impl FileDownloader {
     /// - create an empty file of the correct size on the local file system
     /// - download pieces of the file in parallel
     /// - write each piece to the correct offset in the blank file (also in parallel)
-    pub fn fetch(self) -> impl Future<Item = bool, Error = DlError> + Send {
+    pub fn fetch(self) -> impl Future<Item = HashChecker, Error = DlError> + Send {
         // TODO:
-        // - (1) increase fault tolerance by:
-        //   - make several rounds of downloads (inspecting completed futures for success/error retrying all failed requests/writes)
+        // (1) increase fault tolerance by:
+        //   - inspecting completed futures for success/error retrying all failed requests/writes until no failures
         //   - persisting state of downloads in hashmap, serializing to disk at interval (to be able to restart on crash)
-        // - (2) prevent runaway requests from causing "too many open file errors"
+        // (2) prevent runaway requests from causing "too many open file errors"
         //   - observed when ratio of pieces to threads gets very high
         //   - caused by hyper keeping too many sockets open as http request speed exceeds file write speed
         //   - see (e.g.): https://github.com/seanmonstar/reqwest/issues/386#issuecomment-440891158
-        //   - fix: buffer the stream (blockers: the types for that are hard!)
+        //   - fix: buffer the stream (unimplemented for now: the types for that are hard!)
+        // (3) all this cloning of path is wasteful, but necessary for threadsafety?
+        //     File::open won't take a borrowed path, async/await will apparently solve this when it lands?
         let Self {
             client,
             file_size,
             path,
             uri,
-            ..
+            etag,
         } = self;
 
         let piece_size = calc_piece_size(file_size);
-        create_blank_file(path.clone(), file_size).and_then(move |_| {
-            gen_offsets(file_size, piece_size)
-                .map(move |offset| {
-                    // TODO: it seems like a waste of memory to clone this path every time!
-                    // It means for N chunks, we will create N clones of this string! But...
-                    // For the life of me i cannot figure out a way for this to compile by passing a borrowed reference
-                    // (which is what we'd normally do in such circumstances.)
-                    // ...
-                    // Cause:  `tokio_fs::File::open` requires a 'static lifetime for any Path or OsString
-                    // it uses to open the file, but we can only borrow for some finit lifetime ('a) and
-                    // and cannot coerce `open` to take anything shorter, even though we get the compiler hint
-                    // to specify `File::create + 'a` (which is not valid syntax...)
-                    let p = path.clone();
-                    download_piece(&client, &uri, file_size, piece_size, offset, p)
-                })
-                .map_err(|_| DlError::StreamProcessing)
-                .collect()
-                .and_then(|dl_jobs| future::join_all(dl_jobs))
-                .map(|_| true)
-        })
+        let p = path.clone();
+
+        create_blank_file(path.clone(), file_size)
+            .and_then(move |_| {
+                let u = uri.clone();
+                gen_offsets(file_size, piece_size)
+                    .map(move |offset| {
+                        download_piece(&client, &u, file_size, piece_size, offset, p.clone())
+                    })
+                    .map_err(|_| DlError::StreamProcessing)
+                    .collect()
+                    .and_then(|dl_jobs| future::join_all(dl_jobs))
+            })
+            .map(move |_| HashChecker {
+                path: path.clone(),
+                etag: etag.clone(),
+            })
     }
 }
 
+/// creates a file of `size` null bytes at the given `path`
 fn create_blank_file(path: OsString, size: u64) -> impl Future<Item = u64, Error = DlError> {
     File::create(path)
         .map_err(DlError::Io)
@@ -108,6 +108,7 @@ fn create_blank_file(path: OsString, size: u64) -> impl Future<Item = u64, Error
         })
 }
 
+/// downloads a `piece_size`(d) chunk of the file, seeks to position `offset` and writes the chunk there
 pub fn download_piece<'a>(
     client: &HttpsClient,
     uri: &Uri,
@@ -133,6 +134,7 @@ pub fn download_piece<'a>(
     }
 }
 
+/// parses a `response` into a stream and writes it to `offset` in file
 fn write_to_file(
     response: Response<Body>,
     file: File,
@@ -159,6 +161,7 @@ where
         .map_err(DlError::Io)
 }
 
+/// builds a range GET request with appropriate begin and end points
 fn build_range_request(
     uri: &Uri,
     file_size: u64,
@@ -178,11 +181,12 @@ fn build_range_request(
         .map_err(DlError::Http)
 }
 
+/// extracts the size (in bytes) from a file on disk
 pub fn get_file_size(file: File) -> impl Future<Item = u64, Error = DlError> + Send {
     file.metadata().map(|(_, md)| md.len()).map_err(DlError::Io)
 }
 
-/// determine optimal piece size for given file size according to these norms:
+/// determines optimal piece size for given file size according to these norms:
 /// http://wiki.depthstrike.com/index.php/Recommendations#Torrent_Piece_Sizes_when_making_torrents
 fn calc_piece_size(file_size: u64) -> u64 {
     if file_size <= 8_192 {
@@ -218,7 +222,8 @@ fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error
 mod download_tests {
     use super::*;
     use crate::checksum;
-    use std::path::Path;
+    use crate::https;
+    use std::path::PathBuf;
     use tokio::runtime::Runtime;
 
     const FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
@@ -248,7 +253,6 @@ mod download_tests {
                 // when run with entire test suite, sometimes an extra 4096 bytes gets tacked on in this test.
                 // weird, huh? instead of worrying about that too much (just a code challenge, right?),
                 // let's just write at est that works for both cases...
-                let path = OsString::from("data/foo_seq.pdf");
                 match md.len() {
                     FILE_SIZE => assert!(checksum::md5sum_check(
                         &PathBuf::from("data/foo_seq.pdf"),
