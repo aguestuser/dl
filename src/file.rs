@@ -64,8 +64,6 @@ impl FileDownloader {
         //   - caused by hyper keeping too many sockets open as http request speed exceeds file write speed
         //   - see (e.g.): https://github.com/seanmonstar/reqwest/issues/386#issuecomment-440891158
         //   - fix: buffer the stream (unimplemented for now: the types for that are hard!)
-        // (3) all this cloning of path is wasteful, but necessary for threadsafety?
-        //     File::open won't take a borrowed path, async/await will apparently solve this when it lands?
         let Self {
             client,
             file_size,
@@ -77,7 +75,8 @@ impl FileDownloader {
         let piece_size = calc_piece_size(file_size);
         let p = path.clone();
 
-        create_blank_file(path.clone(), file_size)
+        File::create(path.clone())
+            .map_err(DlError::Io)
             .and_then(move |_| {
                 let u = uri.clone();
                 gen_offsets(file_size, piece_size)
@@ -93,19 +92,6 @@ impl FileDownloader {
                 etag: etag.clone(),
             })
     }
-}
-
-/// creates a file of `size` null bytes at the given `path`
-fn create_blank_file(path: OsString, size: u64) -> impl Future<Item = u64, Error = DlError> {
-    File::create(path)
-        .map_err(DlError::Io)
-        .and_then(move |file| {
-            // TODO: possible to do this more quickly by batching writes? (or is that optimized away by compiler?)
-            futures::stream::repeat([0u8])
-                .take(size)
-                .fold(file, |file, buf| write_chunk(file, buf))
-                .and_then(get_file_size)
-        })
 }
 
 /// downloads a `piece_size`(d) chunk of the file, seeks to position `offset` and writes the chunk there
@@ -128,7 +114,8 @@ pub fn download_piece<'a>(
             Box::new(
                 response
                     .join(file)
-                    .and_then(move |(r, f)| write_to_file(r, f, offset).map(move |_| offset)),
+                    .and_then(move |(r, f)| write_to_file(r, f, offset))
+                    .map(move |_| offset),
             )
         }
     }
@@ -231,7 +218,6 @@ mod download_tests {
     const PADDED_FILE_SIZE: u64 = 57_239;
     const FILE_MD5_SUM: &'static str = "ac89ac31a669c13ec4ce037f1203022c";
     const PADDED_FILE_MD5_SUM: &'static str = "fb8c6de35d7bb3afed571233307aff86";
-    const ZEROS_MD5_SUM: &'static str = "0f343b0931126a20f133d67c2b018a3b";
 
     #[test]
     fn downloading_file_in_sequence() {
@@ -298,23 +284,6 @@ mod download_tests {
 
         Runtime::new().unwrap().block_on(result).unwrap();
         std::fs::remove_file(&Path::new("data/foo_par.pdf")).unwrap();
-    }
-
-    #[test]
-    fn creating_blank_file() {
-        let path = OsString::from("data/foo_blank.pdf");
-        let mut rt = Runtime::new().unwrap();
-
-        let result = create_blank_file(path.clone(), 1024).map(move |file_size| {
-            assert_eq!(file_size, 1024);
-            assert!(
-                checksum::md5sum_check(&Path::new("data/foo_blank.pdf"), ZEROS_MD5_SUM)
-                    .unwrap_or(false)
-            );
-        });
-
-        rt.block_on(result).unwrap();
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
