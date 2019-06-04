@@ -85,10 +85,10 @@ fn is_success(status: StatusCode) -> Result<(), DlError> {
 
 fn have_file_metadata(headers: &HeaderMap<HeaderValue>) -> Result<(), DlError> {
     match headers.get("accept-ranges") == Some(&HeaderValue::from_static(BYTES_RANGE_TYPE))
-        && headers.get("content-type") == Some(&HeaderValue::from_static(BINARY_CONTENT_TYPE))
+        // && headers.get("content-type") == Some(&HeaderValue::from_static(BINARY_CONTENT_TYPE))
     {
         true => Ok(()),
-        false => Err(DlError::InvalidMetadata),
+        false => Err(DlError::RangeMetadataAbsent),
     }
 }
 
@@ -129,15 +129,13 @@ mod metadata_tests {
             path: OsString::from("data/foo_meta.pdf"),
         };
 
-        let future_result = mdd.fetch().map(move |fd| {
-            assert_eq!(fd.file_size, 53143);
-            assert_eq!(
-                fd.etag,
-                Some(String::from("ac89ac31a669c13ec4ce037f1203022c"))
-            );
-        });
+        let fd = Runtime::new().unwrap().block_on(mdd.fetch()).unwrap();
 
-        Runtime::new().unwrap().block_on(future_result).unwrap();
+        assert_eq!(fd.file_size, 53143);
+        assert_eq!(
+            fd.etag,
+            Some(String::from("ac89ac31a669c13ec4ce037f1203022c"))
+        );
     }
 
     #[test]
@@ -148,10 +146,16 @@ mod metadata_tests {
             path: OsString::from("data/foo_meta.pdf"),
         };
 
-        let future_result = mdd.fetch().map_err(move |err| {
-            assert_eq!(err.description(), DlError::InvalidMetadata.description());
-        });
+        let future_result = mdd.fetch();
+        let err = Runtime::new()
+            .unwrap()
+            .block_on(future_result)
+            .err()
+            .unwrap();
 
-        Runtime::new().unwrap().block_on(future_result).unwrap();
+        assert_eq!(
+            err.description(),
+            DlError::RangeMetadataAbsent.description()
+        );
     }
 }

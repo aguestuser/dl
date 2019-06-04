@@ -223,7 +223,7 @@ mod download_tests {
     use super::*;
     use crate::checksum;
     use crate::https;
-    use std::path::PathBuf;
+    use std::path::Path;
     use tokio::runtime::Runtime;
 
     const FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
@@ -247,7 +247,7 @@ mod download_tests {
         let result = fd
             .fetch_seq()
             .and_then(move |_| {
-                tokio_fs::metadata(PathBuf::from("data/foo_seq.pdf")).map_err(DlError::Io)
+                tokio_fs::metadata(Path::new("data/foo_seq.pdf")).map_err(DlError::Io)
             })
             .map(|md| {
                 // when run with entire test suite, sometimes an extra 4096 bytes gets tacked on in this test.
@@ -255,12 +255,12 @@ mod download_tests {
                 // let's just write at est that works for both cases...
                 match md.len() {
                     FILE_SIZE => assert!(checksum::md5sum_check(
-                        &PathBuf::from("data/foo_seq.pdf"),
+                        &Path::new("data/foo_seq.pdf"),
                         FILE_MD5_SUM
                     )
                     .unwrap_or(false)),
                     PADDED_FILE_SIZE => assert!(checksum::md5sum_check(
-                        &PathBuf::from("data/foo_seq.pdf"),
+                        &Path::new("data/foo_seq.pdf"),
                         PADDED_FILE_MD5_SUM
                     )
                     .unwrap_or(false)),
@@ -272,7 +272,7 @@ mod download_tests {
             });
 
         Runtime::new().unwrap().block_on(result).unwrap();
-        std::fs::remove_file(&PathBuf::from("data/foo_seq.pdf")).unwrap();
+        std::fs::remove_file(&Path::new("data/foo_seq.pdf")).unwrap();
     }
 
     #[test]
@@ -287,19 +287,17 @@ mod download_tests {
 
         let result = fd
             .fetch()
-            .and_then(|_| {
-                tokio_fs::metadata(PathBuf::from("data/foo_par.pdf")).map_err(DlError::Io)
-            })
+            .and_then(|_| tokio_fs::metadata(Path::new("data/foo_par.pdf")).map_err(DlError::Io))
             .map(|md| {
                 assert_eq!(md.len(), FILE_SIZE);
                 assert!(
-                    checksum::md5sum_check(&PathBuf::from("data/foo_par.pdf"), FILE_MD5_SUM)
+                    checksum::md5sum_check(&Path::new("data/foo_par.pdf"), FILE_MD5_SUM)
                         .unwrap_or(false)
                 );
             });
 
         Runtime::new().unwrap().block_on(result).unwrap();
-        std::fs::remove_file(&PathBuf::from("data/foo_par.pdf")).unwrap();
+        std::fs::remove_file(&Path::new("data/foo_par.pdf")).unwrap();
     }
 
     #[test]
@@ -310,7 +308,7 @@ mod download_tests {
         let result = create_blank_file(path.clone(), 1024).map(move |file_size| {
             assert_eq!(file_size, 1024);
             assert!(
-                checksum::md5sum_check(&PathBuf::from("data/foo_blank.pdf"), ZEROS_MD5_SUM)
+                checksum::md5sum_check(&Path::new("data/foo_blank.pdf"), ZEROS_MD5_SUM)
                     .unwrap_or(false)
             );
         });
