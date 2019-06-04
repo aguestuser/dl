@@ -2,7 +2,6 @@ use crate::error::DlError;
 use futures::{Future, IntoFuture};
 use hex;
 use md5::{Digest, Md5};
-use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -10,7 +9,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, PartialEq)]
 pub struct HashChecker {
-    pub path: OsString,
+    pub path: PathBuf,
     pub etag: Option<String>,
 }
 
@@ -55,7 +54,7 @@ mod checksum_tests {
     #[test]
     fn taking_m5sum() {
         assert_eq!(
-            md5sum(Path::new("data/foo.txt")).unwrap(),
+            md5sum(&PathBuf::from("data/foo.txt")).unwrap(),
             hex::decode("d3b07384d113edec49eaa6238ad5ff00").unwrap(),
         );
     }
@@ -64,7 +63,7 @@ mod checksum_tests {
     fn checking_md5sum() {
         assert_eq!(
             md5sum_check(
-                Path::new("data/foo.txt"),
+                &PathBuf::from("data/foo.txt"),
                 "d3b07384d113edec49eaa6238ad5ff00"
             )
             .unwrap(),
@@ -75,7 +74,7 @@ mod checksum_tests {
     #[test]
     fn running_hash_checker_with_etag() {
         let hc = HashChecker {
-            path: OsString::from("data/foo.txt"),
+            path: PathBuf::from("data/foo.txt"),
             etag: Some(String::from("d3b07384d113edec49eaa6238ad5ff00")),
         };
         let valid = Runtime::new().unwrap().block_on(hc.check()).unwrap();
@@ -85,7 +84,7 @@ mod checksum_tests {
     #[test]
     fn running_hash_checker_without_etag() {
         let hc = HashChecker {
-            path: OsString::from("data/foo.txt"),
+            path: PathBuf::from("data/foo.txt"),
             etag: None,
         };
         let err = Runtime::new().unwrap().block_on(hc.check()).err().unwrap();

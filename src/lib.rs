@@ -6,7 +6,6 @@ use crate::metadata::MetadataDownloader;
 use error::DlError;
 use futures::Future;
 use hyper::Uri;
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub mod checksum;
@@ -18,7 +17,7 @@ pub mod metadata;
 #[derive(Debug, PartialEq)]
 pub struct Config {
     pub uri: Uri,
-    pub path: OsString,
+    pub path: PathBuf,
 }
 
 // these macros are weird but we need them b/c we cannot concat constant string constants in rust
@@ -52,7 +51,7 @@ impl Config {
             _ => return Err(invalid_uri!()),
         };
 
-        let path = PathBuf::from(&args[2]).into_os_string();
+        let path = PathBuf::from(&args[2]);
 
         Ok({ Config { uri, path } })
     }
@@ -94,7 +93,6 @@ mod lib_tests {
     use super::*;
     use crate::checksum::md5sum_check;
     use std::error::Error;
-    use std::path::Path;
     use tokio::runtime::Runtime;
 
     #[test]
@@ -108,7 +106,7 @@ mod lib_tests {
             .unwrap(),
             Config {
                 uri: Uri::from_static("https://foo.com"),
-                path: OsString::from("bar/baz")
+                path: PathBuf::from("bar/baz")
             }
         )
     }
@@ -134,30 +132,29 @@ mod lib_tests {
 
     #[test]
     fn running_the_app_against_happy_path() {
-        let url = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
-        let path = Path::new("data/happy.pdf");
+        let path = PathBuf::from("data/happy.pdf");
         let cfg = Config {
-            uri: url.parse::<Uri>().unwrap(),
-            path: OsString::from("data/happy.pdf"),
+            uri: "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf".parse::<Uri>().unwrap(),
+            path: path.clone(),
         };
 
         Runtime::new().unwrap().block_on(run(cfg)).unwrap();
-        assert!(path.exists());
-        assert!(md5sum_check(path, "ac89ac31a669c13ec4ce037f1203022c").unwrap());
+        assert!(&path.exists());
+        assert!(md5sum_check(&path, "ac89ac31a669c13ec4ce037f1203022c").unwrap());
 
-        std::fs::remove_file(Path::new("data/happy.pdf")).unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
     fn running_the_app_against_no_range_link() {
-        let url = "https://google.com";
+        let path = PathBuf::from("whack");
         let cfg = Config {
-            uri: url.parse::<Uri>().unwrap(),
-            path: OsString::from("whack"),
+            uri: "https://google.com".parse::<Uri>().unwrap(),
+            path: path.clone(),
         };
 
         let err = Runtime::new().unwrap().block_on(run(cfg)).err().unwrap();
-        assert!(!Path::new("whack").exists());
+        assert!(!&path.exists());
         assert_eq!(
             err.description(),
             DlError::RangeMetadataAbsent.description()
@@ -166,12 +163,10 @@ mod lib_tests {
 
     #[test]
     fn running_the_app_against_no_etag_link() {
-        let url = "https://littlesis.org/assets/lilsis-logo-trans-200-74169fd94db9637c31388ad2060b48720f94450b40c45c23a3889cf480f02c52.png";
-        let path = Path::new("data/logo.png");
-
+        let path = PathBuf::from("data/logo.png");
         let cfg = Config {
-            uri: url.parse::<Uri>().unwrap(),
-            path: OsString::from("data/logo.png"),
+            uri: "https://littlesis.org/assets/lilsis-logo-trans-200-74169fd94db9637c31388ad2060b48720f94450b40c45c23a3889cf480f02c52.png".parse::<Uri>().unwrap(),
+            path: path.clone(),
         };
 
         let err = Runtime::new().unwrap().block_on(run(cfg)).err().unwrap();

@@ -10,7 +10,7 @@ use hyper::HeaderMap;
 use hyper::StatusCode;
 use hyper::{Body, Request};
 use hyper::{Method, Uri};
-use std::ffi::OsString;
+use std::path::PathBuf;
 
 pub const BYTES_RANGE_TYPE: &'static str = "bytes";
 pub const BINARY_CONTENT_TYPE: &'static str = "binary/octet-stream";
@@ -25,7 +25,7 @@ pub struct Metadata {
 pub struct MetadataDownloader {
     pub client: HttpsClient,
     pub uri: Uri,
-    pub path: OsString,
+    pub path: PathBuf,
 }
 
 impl MetadataDownloader {
@@ -126,7 +126,7 @@ mod metadata_tests {
         let mdd = MetadataDownloader {
             client: https::get_client(),
             uri: SMALL_FILE_URL.parse::<Uri>().unwrap(),
-            path: OsString::from("data/foo_meta.pdf"),
+            path: PathBuf::from("data/foo_meta.pdf"),
         };
 
         let fd = Runtime::new().unwrap().block_on(mdd.fetch()).unwrap();
@@ -143,7 +143,7 @@ mod metadata_tests {
         let mdd = MetadataDownloader {
             client: https::get_client(),
             uri: "https://google.com".parse::<Uri>().unwrap(),
-            path: OsString::from("data/foo_meta.pdf"),
+            path: PathBuf::from("data/foo_meta.pdf"),
         };
 
         let future_result = mdd.fetch();

@@ -8,8 +8,8 @@ use hyper;
 use hyper::Response;
 use hyper::{Body, Request, Uri};
 use std::cmp::min;
-use std::ffi::OsString;
 use std::io::SeekFrom;
+use std::path::PathBuf;
 use tokio_fs::{File, OpenOptions};
 use tokio_io::io;
 use tokio_io::AsyncWrite;
@@ -18,7 +18,7 @@ use tokio_io::AsyncWrite;
 pub struct FileDownloader {
     pub client: HttpsClient,
     pub uri: Uri,
-    pub path: OsString,
+    pub path: PathBuf,
     pub file_size: u64,
     pub etag: Option<String>,
 }
@@ -88,8 +88,8 @@ impl FileDownloader {
                     .and_then(|dl_jobs| future::join_all(dl_jobs))
             })
             .map(move |_| HashChecker {
-                path: path.clone(),
-                etag: etag.clone(),
+                path: path,
+                etag: etag,
             })
     }
 }
@@ -101,7 +101,7 @@ pub fn download_piece<'a>(
     file_size: u64,
     piece_size: u64,
     offset: u64,
-    path: OsString,
+    path: PathBuf,
 ) -> Box<Future<Item = u64, Error = DlError> + Send + 'a> {
     match build_range_request(uri, file_size, piece_size, offset) {
         Err(err) => Box::new(future::err(err)),
@@ -224,7 +224,7 @@ mod download_tests {
         let fd = FileDownloader {
             client: https::get_client(),
             uri: FILE_URL.parse::<Uri>().unwrap(),
-            path: OsString::from("data/foo_seq.pdf"),
+            path: PathBuf::from("data/foo_seq.pdf"),
             file_size: 0,
             etag: None,
         };
@@ -266,7 +266,7 @@ mod download_tests {
         let fd = FileDownloader {
             client: https::get_client(),
             uri: FILE_URL.parse::<Uri>().unwrap(),
-            path: OsString::from("data/foo_par.pdf"),
+            path: PathBuf::from("data/foo_par.pdf"),
             file_size: FILE_SIZE,
             etag: None,
         };
