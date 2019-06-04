@@ -1,4 +1,4 @@
-use dl::Config;
+use dl::DlConfig;
 
 use std::env;
 use std::process;
@@ -6,7 +6,7 @@ use std::process;
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    let _cfg = Config::new(args).unwrap_or_else(|err| {
+    let _cfg = DlConfig::new(args).unwrap_or_else(|err| {
         eprintln!("Could not parse arguments: {}", err);
         process::exit(1);
     });

@@ -1,5 +1,9 @@
 use crate::error::DlError;
-use crate::https::HttpsClient;
+use crate::file::FileDownloader;
+use crate::https::{self, HttpsClient};
+use crate::DlConfig;
+use crate::Downloader;
+use futures::future::IntoFuture;
 use hyper;
 use hyper::error::Error as HyperError;
 use hyper::header::HeaderValue;
@@ -8,48 +12,70 @@ use hyper::HeaderMap;
 use hyper::StatusCode;
 use hyper::{Body, Request};
 use hyper::{Method, Uri};
+use std::ffi::OsString;
 
 pub const BYTES_RANGE_TYPE: &'static str = "bytes";
 pub const BINARY_CONTENT_TYPE: &'static str = "binary/octet-stream";
 
 #[derive(Debug, PartialEq)]
-pub struct FileMetadata {
-    content_length: i64,
-    etag: Option<String>,
+pub struct Metadata {
+    pub file_size: u64,
+    pub etag: Option<String>,
 }
 
-/// Uses a `client` to issue a HEAD request to the given `uri`.
-///
-/// Inspects the response to determine:
-/// - whether the uri supports range requests
-/// - the content length of the file, and (optionally) its etag
-///
-/// On happy path:
-/// - returns metadata wrapped in a `FileMetadata` struct
-///
-/// On sad path, returns appropriate error if:
-/// - request fails
-/// - metadata headers are not present
-/// - parsing headers fails
-pub fn fetch_head(
-    client: &HttpsClient,
-    uri: Uri,
-) -> impl Future<Item = Result<FileMetadata, DlError>, Error = HyperError> {
-    // TODO: this should have signature Future<Item = FileMetadata, Error = DlError>
-    let req = Request::builder()
-        .uri(&uri)
-        .method(Method::HEAD)
-        .body(Body::empty())
-        .expect("Failed to build request object");
+#[derive(Debug)]
+pub struct MetadataDownloader {
+    pub client: HttpsClient,
+    pub uri: Uri,
+    pub path: OsString,
+}
 
-    // will require making this an and_then not a map
-    client.request(req).map(|res| {
-        let (status, headers) = (res.status(), res.headers());
-        // and munging types to return appropriate futures here
-        is_success(status)
-            .and_then(|_| have_file_metadata(headers))
-            .and_then(|_| parse_file_metadata(headers))
-    })
+impl MetadataDownloader {
+    /// constructs a `MetadataDownloader` from a `Config` struct
+    pub fn from_config(cfg: DlConfig) -> MetadataDownloader {
+        Self {
+            client: https::get_client(),
+            uri: cfg.uri,
+            path: cfg.path,
+        }
+    }
+
+    /// Tries several strategies to return file metadata and returns an error if not possible
+    pub fn fetch(self) -> impl Future<Item = FileDownloader, Error = DlError> {
+        // TODO: write a `fetch` that tries several strategies
+        self.fetch_head()
+    }
+
+    /// Issues a HEAD request to the downloader's `uri`.
+    ///
+    /// Inspects the response to determine:
+    /// - whether the uri supports range requests or not
+    /// - the size of the file, and (optionally) its etag
+    ///
+    /// **Happy path:** Resolves future with `Metadata` struct
+    ///
+    /// **Sad path:** Resolves future with `Error` indicating whether:
+    /// - request or header parsing failed
+    /// - metadata headers not present
+    pub fn fetch_head(self) -> impl Future<Item = FileDownloader, Error = DlError> {
+        let req = Request::builder()
+            .uri(&self.uri)
+            .method(Method::HEAD)
+            .body(Body::empty())
+            .expect("Failed to build request object");
+
+        self.client
+            .request(req)
+            .map_err(DlError::Hyper)
+            .and_then(|res| {
+                let (status, headers) = (res.status(), res.headers());
+                is_success(status)
+                    .and_then(|_| have_file_metadata(headers))
+                    .and_then(|_| parse_file_metadata(headers))
+                    .map(|md| FileDownloader::from_metadata(self, md))
+                    .into_future()
+            })
+    }
 }
 
 fn is_success(status: StatusCode) -> Result<(), DlError> {
@@ -64,23 +90,20 @@ fn have_file_metadata(headers: &HeaderMap<HeaderValue>) -> Result<(), DlError> {
         && headers.get("content-type") == Some(&HeaderValue::from_static(BINARY_CONTENT_TYPE))
     {
         true => Ok(()),
-        false => Err(DlError::ValidFileMetadata),
+        false => Err(DlError::InvalidMetadata),
     }
 }
 
-fn parse_file_metadata(headers: &HeaderMap<HeaderValue>) -> Result<FileMetadata, DlError> {
+fn parse_file_metadata(headers: &HeaderMap<HeaderValue>) -> Result<Metadata, DlError> {
     let etag: Option<String> = parse_etag(headers);
-    parse_content_length(headers).map(|content_length| FileMetadata {
-        content_length,
-        etag,
-    })
+    parse_length(headers).map(|file_size| Metadata { file_size, etag })
 }
 
-fn parse_content_length(headers: &HeaderMap<HeaderValue>) -> Result<i64, DlError> {
+fn parse_length(headers: &HeaderMap<HeaderValue>) -> Result<u64, DlError> {
     headers
         .get("content-length")
         .and_then(|val| val.to_str().ok())
-        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|s| s.parse::<u64>().ok())
         .ok_or(DlError::ParseContentLength)
 }
 
@@ -101,42 +124,37 @@ mod metadata_tests {
 
     const SMALL_FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
 
-    lazy_static! {
-        pub static ref CLIENT: HttpsClient = { https::get_client() };
-    }
-
     #[test]
     fn fetching_file_metadata() {
-        let uri = SMALL_FILE_URL.parse::<Uri>().unwrap();
-        let mut rt = Runtime::new().unwrap();
+        let mdd = MetadataDownloader {
+            client: https::get_client(),
+            uri: SMALL_FILE_URL.parse::<Uri>().unwrap(),
+            path: OsString::from("data/foo_meta.pdf"),
+        };
 
-        let future_result = fetch_head(&CLIENT, uri).and_then(move |res| {
+        let future_result = mdd.fetch().map(move |fd| {
+            assert_eq!(fd.file_size, 53143);
             assert_eq!(
-                res.unwrap(),
-                FileMetadata {
-                    content_length: 53143,
-                    etag: Some(String::from("ac89ac31a669c13ec4ce037f1203022c"))
-                }
+                fd.etag,
+                Some(String::from("ac89ac31a669c13ec4ce037f1203022c"))
             );
-            future::ok(())
         });
 
-        rt.block_on(future_result).unwrap();
+        Runtime::new().unwrap().block_on(future_result).unwrap();
     }
 
     #[test]
     fn handling_absent_file_metadata() {
-        let uri = "https://google.com".parse::<Uri>().unwrap();
-        let mut rt = Runtime::new().unwrap();
+        let mdd = MetadataDownloader {
+            client: https::get_client(),
+            uri: "https://google.com".parse::<Uri>().unwrap(),
+            path: OsString::from("data/foo_meta.pdf"),
+        };
 
-        let future_result = fetch_head(&CLIENT, uri).and_then(move |res| {
-            assert_eq!(
-                res.err().unwrap().description(),
-                DlError::ValidFileMetadata.description()
-            );
-            future::ok(())
+        let future_result = mdd.fetch().map_err(move |err| {
+            assert_eq!(err.description(), DlError::InvalidMetadata.description());
         });
 
-        rt.block_on(future_result).unwrap();
+        Runtime::new().unwrap().block_on(future_result).unwrap();
     }
 }

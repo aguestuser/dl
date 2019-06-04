@@ -1,67 +1,102 @@
 use crate::error::DlError;
 use crate::https::{self, HttpsClient};
+use crate::metadata::Metadata;
+use crate::metadata::MetadataDownloader;
 use futures::{future, stream, Future, Stream};
 use hyper;
 use hyper::Response;
 use hyper::{Body, Request, Uri};
 use std::cmp::min;
+use std::ffi::OsString;
 use std::io::SeekFrom;
 use std::path::PathBuf;
 use tokio_fs::{File, OpenOptions};
 use tokio_io::io;
 use tokio_io::AsyncWrite;
 
-/// given:a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path
-/// download the entire file in sequence and store it to disk
-/// NOTE: this function is provided mainly for benchmarking comparison with its parallel counterpart
-pub fn fetch_seq(uri: Uri, path: PathBuf) -> Box<Future<Item = (), Error = DlError> + Send> {
-    let client = https::get_client();
-    let response = client.get(uri).map_err(DlError::Hyper);
-    let file = File::create(path.into_os_string()).map_err(DlError::Io);
-    Box::new(
-        response
-            .join(file)
-            .and_then(|(r, f)| write_to_file(r, f, 4096)),
-    )
+#[derive(Debug)]
+pub struct FileDownloader {
+    pub client: HttpsClient,
+    pub uri: Uri,
+    pub path: OsString,
+    pub file_size: u64,
+    pub etag: Option<String>,
 }
 
-/// given an http `client`, a file's `uri`, a known `file_size`, a desired `piece_size` (in bytes) and an output `path`:
-/// - create an empty file of the correct size on the local file system
-/// - download pieces of the file in parallel
-/// - write each piece to the correct offset in the blank file (also in parallel)
-pub fn fetch_par(
-    uri: Uri,
-    path: PathBuf,
-    file_size: u64,
-) -> impl Future<Item = bool, Error = DlError> + Send {
-    // TODO:
-    // - (1) increase fault tolerance by:
-    //   - make several rounds of downloads (inspecting completed futures for success/error retrying all failed requests/writes)
-    //   - persisting state of downloads in hashmap, serializing to disk at interval (to be able to restart on crash)
-    // - (2) prevent runaway requests from causing "too many open file errors"
-    //   - observed when ratio of pieces to threads gets very high
-    //   - caused by hyper keeping too many sockets open as http request speed exceeds file write speed
-    //   - see (e.g.): https://github.com/seanmonstar/reqwest/issues/386#issuecomment-440891158
-    //   - fix: buffer the stream (blockers: the types for that are hard!)
-    let client = https::get_client();
-    let piece_size = calc_piece_size(file_size);
-    create_blank_file(file_size, path.clone()).and_then(move |_file_size| {
-        gen_offsets(file_size, piece_size)
-            .map(move |offset| {
-                download_piece(&client, &uri, file_size, piece_size, offset, path.clone())
-            })
-            .map_err(|_| DlError::StreamProcessing)
-            .collect()
-            .and_then(|dl_jobs| future::join_all(dl_jobs))
-            .map(|_| true)
-    })
+impl FileDownloader {
+    /// constructs a `FileDownloader` from a `MetadataDownloader`
+    pub fn from_metadata(mdd: MetadataDownloader, md: Metadata) -> FileDownloader {
+        Self {
+            client: mdd.client,
+            uri: mdd.uri,
+            path: mdd.path,
+            file_size: md.file_size,
+            etag: md.etag,
+        }
+    }
+
+    /// given:a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path
+    /// download the entire file in sequence and store it to disk
+    /// NOTE: this function is provided mainly for benchmarking comparison with its parallel counterpart
+    pub fn fetch_seq(self) -> Box<Future<Item = bool, Error = DlError> + Send> {
+        let uri = self.uri.clone();
+        let response = self.client.get(uri).map_err(DlError::Hyper);
+        let file = File::create(self.path).map_err(DlError::Io);
+        Box::new(
+            response
+                .join(file)
+                .and_then(|(r, f)| write_to_file(r, f, 4096))
+                .map(move |_| true),
+        )
+    }
+
+    /// given an http `client`, a file's `uri`, a known `file_size`, a desired `piece_size` (in bytes) and an output `path`:
+    /// - create an empty file of the correct size on the local file system
+    /// - download pieces of the file in parallel
+    /// - write each piece to the correct offset in the blank file (also in parallel)
+    pub fn fetch(self) -> impl Future<Item = bool, Error = DlError> + Send {
+        // TODO:
+        // - (1) increase fault tolerance by:
+        //   - make several rounds of downloads (inspecting completed futures for success/error retrying all failed requests/writes)
+        //   - persisting state of downloads in hashmap, serializing to disk at interval (to be able to restart on crash)
+        // - (2) prevent runaway requests from causing "too many open file errors"
+        //   - observed when ratio of pieces to threads gets very high
+        //   - caused by hyper keeping too many sockets open as http request speed exceeds file write speed
+        //   - see (e.g.): https://github.com/seanmonstar/reqwest/issues/386#issuecomment-440891158
+        //   - fix: buffer the stream (blockers: the types for that are hard!)
+        let Self {
+            client,
+            file_size,
+            path,
+            uri,
+            ..
+        } = self;
+
+        let piece_size = calc_piece_size(file_size);
+        create_blank_file(path.clone(), file_size).and_then(move |_| {
+            gen_offsets(file_size, piece_size)
+                .map(move |offset| {
+                    // TODO: it seems like a waste of memory to clone this path every time!
+                    // It means for N chunks, we will create N clones of this string! But...
+                    // For the life of me i cannot figure out a way for this to compile by passing a borrowed reference
+                    // (which is what we'd normally do in such circumstances.)
+                    // ...
+                    // Cause:  `tokio_fs::File::open` requires a 'static lifetime for any Path or OsString
+                    // it uses to open the file, but we can only borrow for some finit lifetime ('a) and
+                    // and cannot coerce `open` to take anything shorter, even though we get the compiler hint
+                    // to specify `File::create + 'a` (which is not valid syntax...)
+                    let p = path.clone();
+                    download_piece(&client, &uri, file_size, piece_size, offset, p)
+                })
+                .map_err(|_| DlError::StreamProcessing)
+                .collect()
+                .and_then(|dl_jobs| future::join_all(dl_jobs))
+                .map(|_| true)
+        })
+    }
 }
 
-/// creates a file of `size` bytes at `path`, containing repeated null bytes
-fn create_blank_file<'a>(
-    size: u64,
-    path: PathBuf,
-) -> impl Future<Item = u64, Error = DlError> + 'a {
+fn create_blank_file(path: OsString, size: u64) -> impl Future<Item = u64, Error = DlError> {
     File::create(path)
         .map_err(DlError::Io)
         .and_then(move |file| {
@@ -79,15 +114,15 @@ pub fn download_piece<'a>(
     file_size: u64,
     piece_size: u64,
     offset: u64,
-    path: PathBuf,
-) -> Box<Future<Item = u64, Error = DlError> + Send> {
+    path: OsString,
+) -> Box<Future<Item = u64, Error = DlError> + Send + 'a> {
     match build_range_request(uri, file_size, piece_size, offset) {
         Err(err) => Box::new(future::err(err)),
         Ok(req) => {
             let response = client.request(req).map_err(|err| DlError::Hyper(err));
             let file = OpenOptions::new()
                 .write(true)
-                .open(path.into_os_string())
+                .open(path)
                 .map_err(DlError::Io);
             Box::new(
                 response
@@ -102,7 +137,7 @@ fn write_to_file(
     response: Response<Body>,
     file: File,
     offset: u64,
-) -> impl Future<Item = (), Error = DlError> + Send {
+) -> impl Future<Item = File, Error = DlError> + Send {
     file.seek(SeekFrom::Start(offset))
         .map_err(DlError::Io)
         .and_then(move |(file, _)| {
@@ -111,7 +146,6 @@ fn write_to_file(
                 .map_err(DlError::Hyper)
                 .fold(file, write_chunk)
         })
-        .map(drop)
 }
 
 /// writes the contents of a buffer into a file, returning a handle to the file
@@ -184,6 +218,7 @@ fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error
 mod download_tests {
     use super::*;
     use crate::checksum;
+    use std::path::Path;
     use tokio::runtime::Runtime;
 
     const FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
@@ -195,12 +230,17 @@ mod download_tests {
 
     #[test]
     fn downloading_file_in_sequence() {
-        let uri = FILE_URL.parse::<Uri>().unwrap();
-        let path = PathBuf::from("data/foo_seq.pdf");
-        let mut rt = Runtime::new().unwrap();
+        let fd = FileDownloader {
+            client: https::get_client(),
+            uri: FILE_URL.parse::<Uri>().unwrap(),
+            path: OsString::from("data/foo_seq.pdf"),
+            file_size: 0,
+            etag: None,
+        };
 
         // TODO: alleviate the need for all this cloning by making a Downloader struct to own client, uri, etc...
-        let result = fetch_seq(uri, path.clone())
+        let result = fd
+            .fetch_seq()
             .and_then(move |_| {
                 tokio_fs::metadata(PathBuf::from("data/foo_seq.pdf")).map_err(DlError::Io)
             })
@@ -208,14 +248,18 @@ mod download_tests {
                 // when run with entire test suite, sometimes an extra 4096 bytes gets tacked on in this test.
                 // weird, huh? instead of worrying about that too much (just a code challenge, right?),
                 // let's just write at est that works for both cases...
-                let path = PathBuf::from("data/foo_seq.pdf");
+                let path = OsString::from("data/foo_seq.pdf");
                 match md.len() {
-                    FILE_SIZE => {
-                        assert!(checksum::md5sum_check(&path, FILE_MD5_SUM).unwrap_or(false))
-                    }
-                    PADDED_FILE_SIZE => {
-                        assert!(checksum::md5sum_check(&path, PADDED_FILE_MD5_SUM).unwrap_or(false))
-                    }
+                    FILE_SIZE => assert!(checksum::md5sum_check(
+                        &PathBuf::from("data/foo_seq.pdf"),
+                        FILE_MD5_SUM
+                    )
+                    .unwrap_or(false)),
+                    PADDED_FILE_SIZE => assert!(checksum::md5sum_check(
+                        &PathBuf::from("data/foo_seq.pdf"),
+                        PADDED_FILE_MD5_SUM
+                    )
+                    .unwrap_or(false)),
                     _ => panic!(
                         "File download wrote wrong number or order of bytes. File size: {}",
                         md.len()
@@ -223,17 +267,22 @@ mod download_tests {
                 }
             });
 
-        rt.block_on(result).unwrap();
-        std::fs::remove_file(&path).unwrap();
+        Runtime::new().unwrap().block_on(result).unwrap();
+        std::fs::remove_file(&PathBuf::from("data/foo_seq.pdf")).unwrap();
     }
 
     #[test]
     fn downloading_file_in_parallel() {
-        let uri = FILE_URL.parse::<Uri>().unwrap();
-        let path = PathBuf::from("data/foo_par.pdf");
-        let mut rt = Runtime::new().unwrap();
+        let fd = FileDownloader {
+            client: https::get_client(),
+            uri: FILE_URL.parse::<Uri>().unwrap(),
+            path: OsString::from("data/foo_par.pdf"),
+            file_size: FILE_SIZE,
+            etag: None,
+        };
 
-        let result = fetch_par(uri, path.clone(), FILE_SIZE)
+        let result = fd
+            .fetch()
             .and_then(|_| {
                 tokio_fs::metadata(PathBuf::from("data/foo_par.pdf")).map_err(DlError::Io)
             })
@@ -245,16 +294,16 @@ mod download_tests {
                 );
             });
 
-        rt.block_on(result).unwrap();
-        std::fs::remove_file(&path).unwrap();
+        Runtime::new().unwrap().block_on(result).unwrap();
+        std::fs::remove_file(&PathBuf::from("data/foo_par.pdf")).unwrap();
     }
 
     #[test]
     fn creating_blank_file() {
-        let path = PathBuf::from("data/foo_blank.pdf");
+        let path = OsString::from("data/foo_blank.pdf");
         let mut rt = Runtime::new().unwrap();
 
-        let result = create_blank_file(1024, path.clone()).map(move |file_size| {
+        let result = create_blank_file(path.clone(), 1024).map(move |file_size| {
             assert_eq!(file_size, 1024);
             assert!(
                 checksum::md5sum_check(&PathBuf::from("data/foo_blank.pdf"), ZEROS_MD5_SUM)

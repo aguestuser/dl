@@ -2,25 +2,34 @@
 #[macro_use]
 extern crate lazy_static;
 
+use crate::file::FileDownloader;
+use crate::metadata::MetadataDownloader;
 use error::DlError;
 use futures::{future, Future};
 use hyper::Uri;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub mod checksum;
-pub mod download;
 pub mod error;
+pub mod file;
 pub mod https;
 pub mod metadata;
 
-#[derive(Debug, PartialEq)]
-pub struct Config {
-    pub uri: Uri,
-    pub path: PathBuf,
+pub enum Downloader {
+    Config(DlConfig),
+    Metadata(MetadataDownloader),
+    File(FileDownloader),
 }
 
-impl Config {
-    pub fn new(args: Vec<String>) -> Result<Config, &'static str> {
+#[derive(Debug, PartialEq)]
+pub struct DlConfig {
+    pub uri: Uri,
+    pub path: OsString,
+}
+
+impl DlConfig {
+    pub fn new(args: Vec<String>) -> Result<DlConfig, &'static str> {
         if args.len() < 3 {
             return Err("Error: please provide 2 arguments. \nCorrect usage: \n    dl <valid_url> <output_path>");
         }
@@ -32,23 +41,22 @@ impl Config {
 
         let maybe_path = PathBuf::from(&args[2]);
         let path = match maybe_path.file_name() {
-            Some(_) => maybe_path,
+            Some(_) => maybe_path.into_os_string(),
             None => return Err("Invalid file path."),
         };
 
-        Ok({ Config { uri, path } })
+        Ok({ DlConfig { uri, path } })
     }
 }
 
-pub fn run(Config { path, uri }: Config) -> Box<impl Future<Item = (), Error = DlError>> {
+pub fn run(cfg: DlConfig) -> impl Future<Item = (), Error = DlError> {
     // try to fetch metadata
     // if found fetch file
     // if downloaded and etag avail, check etag
     // if all succeeds, print path to open file and exit
 
-    Box::new(
-        download::fetch_par(uri.clone(), path.clone(), 40)
-            .and_then(move |_| download::fetch_par(uri.clone(), path.clone(), 40))
-            .and_then(move |_| future::ok(())),
-    )
+    MetadataDownloader::from_config(cfg)
+        .fetch()
+        .and_then(move |file_downloader| file_downloader.fetch())
+        .map(|_| ())
 }
