@@ -74,11 +74,11 @@ impl FileDownloader {
 
         let piece_size = calc_piece_size(file_size);
         let p = path.clone();
+        let u = uri.clone();
 
         File::create(path.clone())
             .map_err(DlError::Io)
             .and_then(move |_| {
-                let u = uri.clone();
                 gen_offsets(file_size, piece_size)
                     .map(move |offset| {
                         download_piece(&client, &u, file_size, piece_size, offset, p.clone())
@@ -95,14 +95,14 @@ impl FileDownloader {
 }
 
 /// downloads a `piece_size`(d) chunk of the file, seeks to position `offset` and writes the chunk there
-pub fn download_piece<'a>(
+pub fn download_piece(
     client: &HttpsClient,
     uri: &Uri,
     file_size: u64,
     piece_size: u64,
     offset: u64,
     path: PathBuf,
-) -> Box<Future<Item = u64, Error = DlError> + Send + 'a> {
+) -> Box<Future<Item = u64, Error = DlError> + Send> {
     match build_range_request(uri, file_size, piece_size, offset) {
         Err(err) => Box::new(future::err(err)),
         Ok(req) => {
