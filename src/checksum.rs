@@ -15,11 +15,11 @@ pub struct HashChecker {
 }
 
 impl HashChecker {
-    pub fn check(self) -> impl Future<Item = (OsString, bool), Error = DlError> {
+    pub fn check(self) -> impl Future<Item = bool, Error = DlError> {
         let p = self.path.clone();
         match self.etag {
             None => Err(DlError::EtagAbsent),
-            Some(etag) => md5sum_check(&PathBuf::from(p.clone()), &etag).map(|valid| (p, valid)),
+            Some(etag) => md5sum_check(&PathBuf::from(p.clone()), &etag),
         }
         .into_future()
     }
@@ -37,12 +37,13 @@ pub fn md5sum_check(path: &Path, sum_hex: &str) -> Result<bool, DlError> {
 // TODO: this should take a PathBuf
 pub fn md5sum(path: &Path) -> Result<Vec<u8>, DlError> {
     let mut buffer = Vec::new();
-    let mut f = File::open(path)?;
-    f.read_to_end(&mut buffer)?;
-
     let mut hasher = Md5::new();
-    hasher.input(buffer);
-    Ok(hasher.result().to_vec())
+
+    File::open(path)
+        .and_then(|mut f| f.read_to_end(&mut buffer))
+        .map_err(DlError::Io)
+        .map(|_| hasher.input(buffer))
+        .map(|_| hasher.result().to_vec())
 }
 
 #[cfg(test)]
@@ -77,12 +78,8 @@ mod checksum_tests {
             path: OsString::from("data/foo.txt"),
             etag: Some(String::from("d3b07384d113edec49eaa6238ad5ff00")),
         };
-
-        let res = hc.check().map(|(_, valid)| {
-            assert_eq!(valid, true);
-        });
-
-        Runtime::new().unwrap().block_on(res).unwrap();
+        let valid = Runtime::new().unwrap().block_on(hc.check()).unwrap();
+        assert_eq!(valid, true);
     }
 
     #[test]
@@ -91,11 +88,7 @@ mod checksum_tests {
             path: OsString::from("data/foo.txt"),
             etag: None,
         };
-
-        let res = hc.check().map_err(|err| {
-            assert_eq!(err.description(), DlError::EtagAbsent.description());
-        });
-
-        Runtime::new().unwrap().block_on(res).err();
+        let err = Runtime::new().unwrap().block_on(hc.check()).err().unwrap();
+        assert_eq!(err.description(), DlError::EtagAbsent.description());
     }
 }

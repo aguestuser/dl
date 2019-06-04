@@ -65,21 +65,25 @@ pub fn run(cfg: Config) -> impl Future<Item = (), Error = DlError> {
         .fetch()
         .and_then(move |file_downloader| {
             println!(
-                "> found metadata. file size: {}, etag: {:?}",
-                &file_downloader.file_size, &file_downloader.etag,
+                "> ...found metadata. file size: {}, etag: {}",
+                &file_downloader.file_size,
+                &file_downloader.etag.clone().unwrap_or(String::from("N/A")),
             );
             println!("> downloading file...");
             file_downloader.fetch()
         })
         .and_then(move |hash_checker| {
-            println!("> ...filed downloaded!");
+            println!("> ...file downloaded!");
+            println!(
+                "\n>>>>> file ready at: {} <<<<<\n",
+                &hash_checker.path.to_str().unwrap()
+            );
             println!("> verifying etag (if present)...");
-            hash_checker.check().map(move |(path, valid)| {
+            hash_checker.check().map(move |valid| {
                 match valid {
                     true => println!("> ...hashes match!"),
                     false => println!("> ...hashes do not match. :("),
                 };
-                println!("> your file is ready at: {:?}", path);
             })
         })
         .map(|_| ())
