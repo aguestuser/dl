@@ -7,6 +7,7 @@ extern crate lazy_static;
 use criterion::{Criterion, ParameterizedBenchmark};
 use dl::{file, https};
 use file::FileDownloader;
+use file::DEFAULT_NUM_PIECES;
 use https::HttpsClient;
 use hyper::Uri;
 use std::path::PathBuf;
@@ -40,6 +41,7 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
                         path: PathBuf::from(PATH),
                         file_size: 0,
                         etag: None,
+                        num_pieces: 0,
                     }
                     .fetch_seq();
 
@@ -57,6 +59,7 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
                     path: PathBuf::from(PATH),
                     file_size: SMALL_FILE_SIZE,
                     etag: None,
+                    num_pieces: DEFAULT_NUM_PIECES,
                 }
                 .fetch();
 
@@ -81,6 +84,7 @@ fn medium_file_par(c: &mut Criterion) {
                         path: PathBuf::from(PATH),
                         file_size: MEDIUM_FILE_SIZE,
                         etag: None,
+                        num_pieces: 0,
                     }
                     .fetch();
 
@@ -98,7 +102,7 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
     c.bench(
         "download medium file",
         ParameterizedBenchmark::new(
-            "in sequence",
+            "in parallel, with different piece sizes",
             |b, _| {
                 b.iter(|| {
                     let res = FileDownloader {
@@ -107,6 +111,7 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
                         path: PathBuf::from(PATH),
                         file_size: 0,
                         etag: None,
+                        num_pieces: 0,
                     }
                     .fetch_seq();
 
@@ -124,6 +129,7 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
                     path: PathBuf::from(PATH),
                     file_size: MEDIUM_FILE_SIZE,
                     etag: None,
+                    num_pieces: DEFAULT_NUM_PIECES,
                 }
                 .fetch();
 
@@ -131,7 +137,34 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
                 std::fs::remove_file(&PATH).unwrap();
             })
         })
-        .sample_size(5),
+        .sample_size(10),
+    );
+}
+
+fn medium_file_par_varying_piece_sizes(c: &mut Criterion) {
+    c.bench(
+        "download medium file",
+        ParameterizedBenchmark::new(
+            "in parallel",
+            move |b, i| {
+                b.iter(move || {
+                    let res = FileDownloader {
+                        client: https::get_client(),
+                        uri: MEDIUM_FILE_URL.parse::<Uri>().unwrap(),
+                        path: PathBuf::from(PATH),
+                        file_size: MEDIUM_FILE_SIZE,
+                        etag: None,
+                        num_pieces: *i,
+                    }
+                    .fetch();
+
+                    Runtime::new().unwrap().block_on(res).unwrap();
+                    std::fs::remove_file(&PATH).unwrap();
+                })
+            },
+            vec![8, 16, 32],
+        )
+        .sample_size(10),
     );
 }
 
@@ -148,6 +181,7 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
                         path: PathBuf::from(PATH),
                         file_size: 0,
                         etag: None,
+                        num_pieces: 0,
                     }
                     .fetch_seq();
 
@@ -165,6 +199,7 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
                     path: PathBuf::from(PATH),
                     file_size: LARGE_FILE_SIZE,
                     etag: None,
+                    num_pieces: DEFAULT_NUM_PIECES,
                 }
                 .fetch();
 
@@ -172,23 +207,24 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
                 std::fs::remove_file(&PATH).unwrap();
             })
         })
-        .sample_size(2),
+        .sample_size(5),
     );
 }
 
-fn large_file_par(c: &mut Criterion) {
+fn large_file_par_varying_piece_sizes(c: &mut Criterion) {
     c.bench(
         "download large file",
         ParameterizedBenchmark::new(
-            "in sequence",
-            |b, _| {
-                b.iter(|| {
+            "in parallel",
+            move |b, i| {
+                b.iter(move || {
                     let res = FileDownloader {
                         client: https::get_client(),
                         uri: LARGE_FILE_URL.parse::<Uri>().unwrap(),
                         path: PathBuf::from(PATH),
                         file_size: LARGE_FILE_SIZE,
                         etag: None,
+                        num_pieces: *i,
                     }
                     .fetch();
 
@@ -196,18 +232,19 @@ fn large_file_par(c: &mut Criterion) {
                     std::fs::remove_file(&PATH).unwrap();
                 })
             },
-            vec![0],
+            vec![8, 16, 32],
         )
-        .sample_size(2),
+        .sample_size(5),
     );
 }
 
 criterion_group!(
     benches,
-    // small_file_par_vs_seq,
-    //medium_file_par,
+    medium_file_par_varying_piece_sizes,
+    large_file_par_varying_piece_sizes,
+    small_file_par_vs_seq,
+    medium_file_par,
     medium_file_par_vs_seq,
-    // large_file_par_vs_seq,
-    // large_file_par,
+    large_file_par_vs_seq,
 );
 criterion_main!(benches);
