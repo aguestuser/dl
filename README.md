@@ -13,6 +13,15 @@
 
 # Getting Started <a name="geting-started"></a>
 
+## Get the code!
+
+Assuming you don't have the repo yet, get it with:
+
+``` shell
+git clone https://0xacab.org/aguestuser/dl.git
+cd dl
+```
+
 ## System Dependencies <a name="dependencies"></a>
 
 You will need `rust` and its build tool, `cargo`, installed to run `dl`. The fastest/simplest way to install them is by running this in a shell:
@@ -56,7 +65,7 @@ sudo ln -s ${PWD}/target/release/dl /usr/bin/dl
 
 ## Running dl <a name="run"></a>
 
-Okay! Time for the main event! You can run dl with:
+Okay! Time for the main event! Now you can run dl with:
 
 ``` shell
 dl <url_to_download_from> <path_to_save_file_to>
@@ -69,7 +78,6 @@ For example, to download this ~20mb copy of `Designing Data-Intensive Applicatio
 ``` shell
 dl https://recurse-uploads-production.s3.amazonaws.com/dc12e4d0-3c82-45b8-9cb7-6c64a8f50cfb/austin_guest_resume.pdf data/book.pdf
 ```
-
 If you didn't symlink the build artifact above, you could run:
 
 ``` shell
