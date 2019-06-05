@@ -84,31 +84,6 @@ If you didn't symlink the build artifact above, you could run:
 ./target/release/dl <url> <path>
 ```
 
-You could also just run `dl "foo bar" "123"`, but that won't be terribly interesting! ;)
-
-**NOTE ABOUT VERY LARGE FILES:**
-
-`dl` does not behave particularly well for files on the order of several hundred megabytes.
-
-For test files around 300mb, I have observed:
-
-1. `too many open file` errors from the OS (caused by a flood of request causing too many sockets to remain open at the same time)
-2. `connection reset by peer` errors from the server (presumably caused by our unthrottled traffic looking like an attack)
-
-(1) can be (sloppily!) worked around by increasing the limit on open files for your shell session to the maximum allowed with:
-
-``` shell
-ulimit -n $(ulimit -Hn)
-```
-
-Fixing (2) in a robust way would require:
-
-(a) tracking the status of each request and retrying on failure until all have completed successfully
-(b) throttling the number of requests in flight at any moment (which would have the happy effect of more elegantly mitigating (1))
-
-Sadly, I did not have time to do either for this challenge, but it's what I'd like to do if I had more time.
-
-
 ## Developing dl <a name="develop"></a>
 
 In the above we used production builds because they are faster, and this is a **challenge!** However, if we wanted to hack on the project to change it, we'd want faster build/run cycle than come with the release flag and invoking a binary.
@@ -164,12 +139,12 @@ As should be evident from the above, the flow of the program is to:
 Most of the heavy lifting comes in `dl::file::FileDownloader::fetch`. This function:
 
 - creates a blank placeholder file into which chunks will be written as soon as they come off the wire
-- calculates optimally-sized chunks in which to download the file (generating larger pieces for larger files), then generates a stream of chunk-sized offsets to use in range requests)
+- calculates optimally-sized chunks in which to download the file, then generates a stream of chunk-sized offsets to use in range requests)
 - consumes the stream of offsets and fires of a stream of parallel range requests for the corresponding chunk
 - transforms the stream of responses into a stream of buffered bytes, which it writes to the placeholder file after seeking to the correct offset (note: all writes are performed in parallel)
-- collects this stream of futures into a single future that resolves successfully if all requests resovle successfully and with failure if any requests fail (yes: we could be less brittle than that in future iterations!)
+- collects this stream of futures into a single future that resolves successfully if all requests resovle successfully and with failure if any requests fail (yes: we could be less brittle than that in future iterations!**
 
-A brief note on types:
+**A brief note on types:**
 
 Each call to `download_piece` returns a value that we represent as a `Future<u64, DlError>`. The `u64` represents the offset of the downloaded chunk-- in case we wanted to track the status of each request for retries, which we don't currently do (very brittle, I know!).
 
@@ -177,41 +152,73 @@ The`DlError` is a custom error class that serves as an enumerable set of all pos
 
 It also makes error-handling in the main loop a breeze, since we have a strong guarantee that our main loop will only ever produce (future) errors of a certain type and that execution will short circuit as soon as one is encountered. Thus, we can just call our main function and `map_err` over its results to print the correct error at the correct time without worrying too much about it. If we wanted to bucket errors into smaller groupings for a larger calling function, that would also be easy. I found all this business with errors annoying at first, but in the end I liked it!
 
-if you see a `Box<Future>` and wonder what's going on: its main purpose is to make sure the compiler has enough information about what kind of future we're returning when we compose Futures of slightly varying types.
+if you see a `Box<Future>** and wonder what's going on: its main purpose is to make sure the compiler has enough information about what kind of future we're returning when we compose Futures of slightly varying types.
+
+**A note on piece size calculation:**
+
+In my original solution, I used a tiered system of coercing piece sizes into a set of tiered bands -- with larger files getting larger piece sizes -- according to [this scheme](http://wiki.depthstrike.com/index.php/Recommendations#Torrent_Piece_Sizes_when_making_torrents) recommended for calculating file piece size for torrents.
+
+However, I found that at very large file sizes (~200MB and above), I would observe the following bugs:
+
+1. `too many open file` errors from the OS (caused by a flood of request causing too many sockets to remain open at the same time)
+2. `connection reset by peer` errors from the server (presumably caused by our unthrottled traffic looking like an attack)
+
+Both introduced halting errors, which was a real bummer!
+
+I needed some way to throttle the number of requests being processed at the same time. I briefly investigated using [futures::stream::buffered](https://docs.rs/futures/0.1.27/futures/stream/trait.Stream.html#method.buffered), which is supposed to throttle stream processing, but proved difficult to implement, and outside the scope of this challenge's timeline to figure out.
+
+Instead, I realized I could effectively "throttle" the number of requests by setting a ceiling on the number of pieces I divided the file into, and then requesting them all in one blast (without throttling).
+
+After some benchmarking, I determined that 32 pieces (with a thread pool of 8) seemed to perform the fastest, so I opted for this as my jury-rigged "throttling" solution. I realize it's sort of hacky, but it gets the job done and prevents the program from crashing when trying to download large files, so I counted it as a win!
+
+I would be interested in investigating other throttling strategies were I to continue to develop the project.
 
 # Profiling <a name="profiling"></a>
 
-My main goal in building this project was to build something that was fast, but not necessarily fault-tolerant. (And to learn about async programming in rust!)
+My main goal in building this project was to build something that was fast, but not necessarily faulttolerant. (And to learn about async programming in rust!)
 
 On this score, I think I did okay. To make sure this was true, I performed some elementary profiling to compare the performance of my parallel solution with a straight-up `GET` request.
 
-The benchmarks from these profiling experiments live with the repo. They were performed on an 8-core Lenovo X1 Carbon with 16GB of RAM running Debian Buster. You can view the reports from these benchmarks in the browser with (for example):
+The benchmarks from these profiling experiments live with the repo. They were performed on an 8-core Lenovo X1 Carbon with 16GB of RAM running Debian Buster on (1) a very slow internet connection at my apartment (no measurements) taken at time of writing, (2) a fast internet connection at RC with speeds of 120 Mbps down / 200 Mbps up.
+
+You can view the reports from these benchmarks in the browser with (for example):
 
 ``` shell
 cd path/to/this/repo
 firefox target/criterion/report/index.html
 ```
 
-The upshot is that the parallel solution performs increasingly better than its sequential counterpart the larger the files it is downloading.
+## First pass
 
-For small files (on the order of 50KB) both solutions perform roughly the same: downloading files in ~400ms.
+In my first round of benchmarking (performed at home on a slow internet connection), my goal was to compare my parellel solution to a GET request downloading the same file. I wanted to see if the parallel solution outperformed the sequential version and observe see how this relationship scaled with increasing file sizes.
 
-For medium sized files (on the order of 50MB), the parallel solution outperforms its sequential counterpart by roughly 8x (13s vs 102s), which makes sense, since my machine has 8 cores.
+The upshot was that the parallel solution performs increasingly better than its sequential counterpart the larger the files it is downloading.
+
+For small files (on the order of 50KB) both solutions performed roughly the same: downloading files in ~400ms.
+
+For medium sized files (on the order of 50MB), the parallel solution outperformed its sequential counterpart by roughly 8x (13s vs 102s), which makes sense, since my machine has 8 cores.
 
 For large files (on the order of 500MB), I don't have any data available because my solution breaks at that scale.
 
-Given time, I would like to further develop the app to see whether the gains from parallelization remain fixed in proportion to the number of cores on my machine or vary at all at different (larger) scales.
+## Second pass
+
+After settling on a "dumb" method of throttling, I decided to profile, this time with the goals of (1) determine an optimal number of pieces ,and (2) comparing the parallel solution to the sequential solution.
+
+For the former trial I compared dividing a file into 8, 16, and 32 pieces (multiples of the number of cores on my machine), I found that 32 pieces (meaning that at most 32 write jobs would be happening concurrently) worked best. At 64, I found that certain servers would get flooded with requests and reset the connection. (Since I had descoped stream buffering, 32 seemed good enough.)
+
+For the latter trial, I got surprising results. I had a much faster internet connection. (Files that took minutes to download at home took seconds at RC). And I observed no appreciable difference between download speeds for small, medium, or large files.
+
+However, my solution no longer falls down at increasingly large file sizes (up to 2GB), so I suppose that counts as a win? Who's to say. Let's talk about it together! :)
 
 # TODO <a name="todo"></a>
 
 As noted above, my solution has two major flaws:
 
-(1) It does not retry failed chunk requests and suffers halting errors when they happen
-(2) It does not throttle requests and suffers halting errors when the server resets the connection as a result
+1. It does not retry failed chunk requests and suffers halting errors when they happen
 
 Additionally:
 
-(3) It relies on discovering the file of the size in advance (to calculate chunk sizes) but has no fallback measures in place for discovering that information in the case that the target server does not supply in in the response to a `HEAD` request.
+2. It relies on discovering the file of the size in advance (to calculate chunk sizes) but has no fallback measures in place for discovering that information in the case that the target server does not supply in in the response to a `HEAD` request.
 
 If I had more time to work on this project, I'd want to solve the above problems in roughly that order. Here are some preliminary thoughts on how I'd do so:
 
@@ -225,21 +232,7 @@ On subsequent calls, `fetch` should omit offset whose keys contain `Success` val
 
 To add in further resilience, we could consider the case that execution might terminate in the middle of downloading or writing. To recover from this, we could serialize our `chashmap` on some sane interval and write it to disk, and always make an attempt to build the initial `chashmap` that we pass into `fetch` by deserializing whatever we do (or don't) have stored to disk.
 
-## 2. Throttling Requests
-
-I tried to do this was frankly surprised at how difficult it was.
-
-At first pass [futures::stream::buffered](https://docs.rs/futures/0.1.27/futures/stream/trait.Stream.html#method.buffered) seemed to be the way to go. The idea is that you'd pass a concurrency limit as the value of `amt` and only ever have that many futures in flight at the same time. However, I tried but couldn't figure out how to get the types to line up to get this to both (1) consume the entire stream without terminating early (it appeared to only consume the `amt` number, then stop? like `stream::take` does?), (2) return a future of the right type whenever any unit of processing was complete. It's a bit of a head scratcher, and I'm honestly a bit tired of fighting the rust compiler after several days straight at it. But if I had to take a guess at where to start, this would be it.
-
-Some interesting prior art around the `too many files open` bug that I've been poking around include:
-
-* [issue on hyper](https://github.com/hyperium/hyper/issues/1422)
-* [issue on reqwest -- another tokio-based http lib](https://github.com/seanmonstar/reqwest/issues/386)
-* [handrolled channel-based fix](https://github.com/sybblow/rust-concurrent-http-request/blob/master/src/main.rs) based on discussion in [this reddit thread](https://www.reddit.com/r/rust/comments/68bd6h/tokio_hyper_and_many_client_requests/)
-
-In any case, I take some comfort in knowing that I seem to be in somewhat decent company at having a hard time cracking this problem.
-
-## 3. Fallback file-size discovery
+## 2. Fallback file-size discovery
 
 I left a seam for introducing a functional take on a "strategy pattern" solution to this problem in `MetadataDownloader::fetch`. The idea would be that we would call a pipeline of composed functions to try to discover the file size. If any of them find the answer, we return early. If all of them fail, we return an error, causing the caller's execution to short circuit.
 
