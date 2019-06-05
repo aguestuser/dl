@@ -101,7 +101,7 @@ Fixing (2) in a robust way would require:
 Sadly, I did not have time to do either for this challenge, but it's what I'd like to do if I had more time.
 
 
-## Developing dl ## Running dl <a name="develop"></a>
+## Developing dl <a name="develop"></a>
 
 In the above we used production builds because they are faster, and this is a **challenge!** However, if we wanted to hack on the project to change it, we'd want faster build times than come with the release flag. We'd build with a simple:
 
