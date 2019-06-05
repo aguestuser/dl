@@ -131,7 +131,7 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
                 std::fs::remove_file(&PATH).unwrap();
             })
         })
-        .sample_size(2),
+        .sample_size(5),
     );
 }
 
