@@ -13,6 +13,7 @@ pub mod error;
 pub mod file;
 pub mod https;
 pub mod metadata;
+pub mod pieces;
 
 #[derive(Debug, PartialEq)]
 pub struct Config {
