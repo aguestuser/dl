@@ -179,7 +179,9 @@ My main goal in building this project was to build something that was fast, but 
 
 On this score, I think I did okay. To make sure this was true, I performed some elementary profiling to compare the performance of my parallel solution with a straight-up `GET` request.
 
-The benchmarks from these profiling experiments live with the repo. They were performed on an 8-core Lenovo X1 Carbon with 16GB of RAM running Debian Buster on (1) a very slow internet connection at my apartment (no measurements) taken at time of writing, (2) a fast internet connection at RC with speeds of 120 Mbps down / 200 Mbps up.
+The benchmarks from these profiling experiments live with the repo. I performed two rounds of benchmarks (one on my un-throttled solution, and another round on my throttled solution).
+
+Both rounds were both performed on an 8-core Lenovo X1 Carbon with 16GB of RAM running Debian Buster. The first round was performed on a very slow internet connection at my apartment. The second round was performed on a very fast internet connection at Recurse Center (with speeds of 120 Mbps down / 200 Mbps up).
 
 You can view the reports from these benchmarks in the browser with (for example):
 
@@ -188,27 +190,33 @@ cd path/to/this/repo
 firefox target/criterion/report/index.html
 ```
 
-## First pass
+## First round
 
-In my first round of benchmarking (performed at home on a slow internet connection), my goal was to compare my parellel solution to a GET request downloading the same file. I wanted to see if the parallel solution outperformed the sequential version and observe see how this relationship scaled with increasing file sizes.
+In my first round of benchmarking (performed at home on a slow internet connection**, my goal was to compare my parellel solution to a GET request downloading the same file. I wanted to see if the parallel solution outperformed the sequential version and observe see how this relationship scaled with increasing file sizes.
 
 The upshot was that the parallel solution performs increasingly better than its sequential counterpart the larger the files it is downloading.
 
-For small files (on the order of 50KB) both solutions performed roughly the same: downloading files in ~400ms.
-
-For medium sized files (on the order of 50MB), the parallel solution outperformed its sequential counterpart by roughly 8x (13s vs 102s), which makes sense, since my machine has 8 cores.
-
-For large files (on the order of 500MB), I don't have any data available because my solution breaks at that scale.
+- **For small files (on the order of 50KB):** the parallel solution performed roughly the same as a GET request -- downloading files in ~400ms.
+- **For medium sized files (on the order of 50MB):** the parallel solution outperformed a GET request by roughly 8x (13s vs 102s)
+- **For large files (on the order of 500MB):** I don't have any data available because my solution fell down at that scale.
 
 ## Second pass
 
-After settling on a "dumb" method of throttling, I decided to profile, this time with the goals of (1) determine an optimal number of pieces ,and (2) comparing the parallel solution to the sequential solution.
+After settling on a "dumb" method of throttling, I decided to profile, this time with the goals of (1) determine an optimal number of pieces ,and (2) comparing the parallel solution to the sequential solution as above.
 
 For the former trial I compared dividing a file into 8, 16, and 32 pieces (multiples of the number of cores on my machine), I found that 32 pieces (meaning that at most 32 write jobs would be happening concurrently) worked best. At 64, I found that certain servers would get flooded with requests and reset the connection. (Since I had descoped stream buffering, 32 seemed good enough.)
 
-For the latter trial, I got surprising results. I had a much faster internet connection. (Files that took minutes to download at home took seconds at RC). And I observed no appreciable difference between download speeds for small, medium, or large files.
+First of all, I noticed that my throttled solution was able to download very large files (up to 2GB) without falling down. Yay!
 
-However, my solution no longer falls down at increasingly large file sizes (up to 2GB), so I suppose that counts as a win? Who's to say. Let's talk about it together! :)
+Secondly, I noticed that with a faster internet connection, it took larger and larger files before I saw any gains from parallelizing. I am not sure exactly how to explain that observation, but it was interesting! More specifically:
+
+- **For small files (~50KB):** The parallel solution was 1.5x slower than a GET request (120ms v 80ms)
+- **For medium files (~50MB):** The parallel solution was trivially faster than a GET request (1.1 s v. 1.2 s)
+- **For large files (~500MB):** The parallel solution was trivially faster than a GET request (24.3s vs 25.2s)
+- **For very large files (~2GB):** The parallel solution was ~3x faster than a GET request (78s vs. 253s)
+
+
+
 
 # TODO <a name="todo"></a>
 
