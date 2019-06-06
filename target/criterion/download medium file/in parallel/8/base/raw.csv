@@ -1,0 +1,11 @@
+group,function,value,sample_time_nanos,iteration_count
+download medium file,in parallel,8,992511525.0,1
+download medium file,in parallel,8,1936670787.0,2
+download medium file,in parallel,8,3194997560.0,3
+download medium file,in parallel,8,4092307365.0,4
+download medium file,in parallel,8,5537856656.0,5
+download medium file,in parallel,8,5707171845.0,6
+download medium file,in parallel,8,7189585194.0,7
+download medium file,in parallel,8,8369765527.0,8
+download medium file,in parallel,8,8667422944.0,9
+download medium file,in parallel,8,10330389998.0,10

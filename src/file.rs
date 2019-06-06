@@ -14,13 +14,15 @@ use tokio_fs::{File, OpenOptions};
 use tokio_io::io;
 use tokio_io::AsyncWrite;
 
-#[derive(Debug)]
+pub const DEFAULT_NUM_PIECES: u64 = 32;
+
 pub struct FileDownloader {
     pub client: HttpsClient,
     pub uri: Uri,
     pub path: PathBuf,
     pub file_size: u64,
     pub etag: Option<String>,
+    pub num_pieces: u64,
 }
 
 impl FileDownloader {
@@ -32,6 +34,7 @@ impl FileDownloader {
             path: mdd.path,
             file_size: md.file_size,
             etag: md.etag,
+            num_pieces: DEFAULT_NUM_PIECES,
         }
     }
 
@@ -70,9 +73,10 @@ impl FileDownloader {
             path,
             uri,
             etag,
+            num_pieces,
         } = self;
 
-        let piece_size = calc_piece_size(file_size);
+        let piece_size = file_size / num_pieces;
         let p = path.clone();
         let u = uri.clone();
 
@@ -173,34 +177,6 @@ pub fn get_file_size(file: File) -> impl Future<Item = u64, Error = DlError> + S
     file.metadata().map(|(_, md)| md.len()).map_err(DlError::Io)
 }
 
-/// determines optimal piece size for given file size according to these norms:
-/// http://wiki.depthstrike.com/index.php/Recommendations#Torrent_Piece_Sizes_when_making_torrents
-fn calc_piece_size(file_size: u64) -> u64 {
-    if file_size <= 8_192 {
-        file_size // below 8KiB -> do not break into pieces
-    } else if is_between(file_size, 8_192, 131_072) {
-        8_192 // 8KiB..128KiB -> 8KiB
-    } else if is_between(file_size, 131_072, 52_428_800) {
-        32_768 // 128KiB..50MiB -> 32KiB
-    } else if is_between(file_size, 52_428_800, 157_286_400) {
-        65_536 // 50MiB..150MiB -> 64KiB
-    } else if is_between(file_size, 157_286_400, 367_001_600) {
-        131_072 // 150MiB..350MiB -> 127KiB
-    } else if is_between(file_size, 367_001_600, 536_870_900) {
-        262_144 // 350Mib..512MiB -> 256KiB
-    } else if is_between(file_size, 536_870_900, 1_073_742_000) {
-        524_288 // 512MiB..1GiB -> 512KiB
-    } else if is_between(file_size, 1_073_742_000, 2_147_484_000) {
-        1_048_576 // 1GiB..2GiB -> 1024KiB
-    } else {
-        2_097_152 // above 2GiB -> 2048KiB
-    }
-}
-
-fn is_between(n: u64, floor: u64, ceiling: u64) -> bool {
-    n > floor && n <= ceiling
-}
-
 fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error = ()> {
     stream::iter_ok::<_, ()>((0..file_size).step_by(piece_size as usize))
 }
@@ -227,6 +203,7 @@ mod download_tests {
             path: PathBuf::from("data/foo_seq.pdf"),
             file_size: 0,
             etag: None,
+            num_pieces: 0,
         };
 
         // TODO: alleviate the need for all this cloning by making a Downloader struct to own client, uri, etc...
@@ -269,6 +246,7 @@ mod download_tests {
             path: PathBuf::from("data/foo_par.pdf"),
             file_size: FILE_SIZE,
             etag: None,
+            num_pieces: DEFAULT_NUM_PIECES,
         };
 
         let result = fd
@@ -284,46 +262,6 @@ mod download_tests {
 
         Runtime::new().unwrap().block_on(result).unwrap();
         std::fs::remove_file(&Path::new("data/foo_par.pdf")).unwrap();
-    }
-
-    #[test]
-    fn calculating_piece_sizes() {
-        // below 8KiB -> do not break into pieces
-        assert_eq!(calc_piece_size(100), 100);
-        assert_eq!(calc_piece_size(8_191), 8_191);
-
-        // 8KiB..32KiB -> 8KiB
-        assert_eq!(calc_piece_size(8_192), 8_192);
-        assert_eq!(calc_piece_size(8_193), 8_192);
-        assert_eq!(calc_piece_size(131_072), 8_192);
-
-        // 32KiB..50MiB -> 32KiB
-        assert_eq!(calc_piece_size(131_073), 32_768);
-        assert_eq!(calc_piece_size(52_428_800), 32_768);
-
-        // 50MiB..150MiB -> 64KiB
-        assert_eq!(calc_piece_size(52_428_801), 65_536);
-        assert_eq!(calc_piece_size(157_286_400), 65_536);
-
-        // 150MiB..350MiB -> 127KiB
-        assert_eq!(calc_piece_size(157_286_401), 131_072);
-        assert_eq!(calc_piece_size(367_001_600), 131_072);
-
-        // 350Mib..512MiB -> 256KiB
-        assert_eq!(calc_piece_size(367_001_601), 262_144);
-        assert_eq!(calc_piece_size(536_870_900), 262_144);
-
-        // 512MiB..1GiB -> 512KiB
-        assert_eq!(calc_piece_size(536_870_901), 524_288);
-        assert_eq!(calc_piece_size(1_073_742_000), 524_288);
-
-        // 1GiB..2GiB -> 1024KiB
-        assert_eq!(calc_piece_size(1_073_742_001), 1_048_576);
-        assert_eq!(calc_piece_size(2_147_484_000), 1_048_576);
-
-        // above 2GiB -> 2048KiB
-        assert_eq!(calc_piece_size(2_147_484_001), 2_097_152);
-        assert_eq!(calc_piece_size(200_147_484_00), 2_097_152);
     }
 
     #[test]

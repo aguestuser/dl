@@ -1,0 +1,11 @@
+group,function,value,sample_time_nanos,iteration_count
+download medium file,"in parallel, with different piece sizes",,944740295.0,1
+download medium file,"in parallel, with different piece sizes",,1861134712.0,2
+download medium file,"in parallel, with different piece sizes",,2887008828.0,3
+download medium file,"in parallel, with different piece sizes",,3792408769.0,4
+download medium file,"in parallel, with different piece sizes",,5012319021.0,5
+download medium file,"in parallel, with different piece sizes",,6028095779.0,6
+download medium file,"in parallel, with different piece sizes",,6732422880.0,7
+download medium file,"in parallel, with different piece sizes",,8266646643.0,8
+download medium file,"in parallel, with different piece sizes",,9288315215.0,9
+download medium file,"in parallel, with different piece sizes",,9593738407.0,10
