@@ -71,7 +71,7 @@ fn small_file_par_vs_seq(c: &mut Criterion) {
                 std::fs::remove_file(&PATH).unwrap();
             })
         })
-        .sample_size(10),
+        .sample_size(20),
     );
 }
 
@@ -114,7 +114,7 @@ fn medium_file_par_vs_seq(c: &mut Criterion) {
                 std::fs::remove_file(&PATH).unwrap();
             })
         })
-        .sample_size(5),
+        .sample_size(10),
     );
 }
 
@@ -176,7 +176,7 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
                     path: PathBuf::from(PATH),
                     file_size: LARGE_FILE_SIZE,
                     etag: None,
-                    num_pieces: 64,
+                    num_pieces: DEFAULT_NUM_PIECES,
                 }
                 .fetch();
 
@@ -184,7 +184,7 @@ fn large_file_par_vs_seq(c: &mut Criterion) {
                 std::fs::remove_file(&PATH).unwrap();
             })
         })
-        .sample_size(2),
+        .sample_size(5),
     );
 }
 
@@ -212,33 +212,6 @@ fn large_file_par_varying_piece_sizes(c: &mut Criterion) {
             vec![8, 16, 32],
         )
         .sample_size(2),
-    );
-}
-
-fn large_file_par(c: &mut Criterion) {
-    c.bench(
-        "download large file",
-        ParameterizedBenchmark::new(
-            "in parallel",
-            move |b, i| {
-                b.iter(move || {
-                    let res = FileDownloader {
-                        client: https::get_client(),
-                        uri: LARGE_FILE_URL.parse::<Uri>().unwrap(),
-                        path: PathBuf::from(PATH),
-                        file_size: LARGE_FILE_SIZE,
-                        etag: None,
-                        num_pieces: 64,
-                    }
-                    .fetch();
-
-                    Runtime::new().unwrap().block_on(res).unwrap();
-                    std::fs::remove_file(&PATH).unwrap();
-                })
-            },
-            vec![0],
-        )
-            .sample_size(2),
     );
 }
 
@@ -289,12 +262,11 @@ fn very_large_file_par_vs_seq(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    // medium_file_par_varying_piece_sizes,
-    // large_file_par_varying_piece_sizes,
-    // small_file_par_vs_seq,
-    // medium_file_par_vs_seq,
-    // large_file_par_vs_seq,
-    // large_file_par,
+    medium_file_par_varying_piece_sizes,
+    large_file_par_varying_piece_sizes,
+    small_file_par_vs_seq,
+    medium_file_par_vs_seq,
+    large_file_par_vs_seq,
     very_large_file_par_vs_seq,
 );
 criterion_main!(benches);
