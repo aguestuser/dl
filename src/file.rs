@@ -41,7 +41,7 @@ impl FileDownloader {
     /// given:a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path
     /// download the entire file in sequence and store it to disk
     /// NOTE: this function is provided mainly for benchmarking comparison with its parallel counterpart
-    pub fn fetch_seq(self) -> Box<Future<Item = bool, Error = DlError> + Send> {
+    pub fn fetch_seq(self) -> Box<dyn Future<Item = bool, Error = DlError> + Send> {
         let uri = self.uri.clone();
         let response = self.client.get(uri).map_err(DlError::Hyper);
         let file = File::create(self.path).map_err(DlError::Io);
@@ -73,10 +73,10 @@ impl FileDownloader {
             path,
             uri,
             etag,
-            num_pieces,
+            ..
         } = self;
 
-        let piece_size = file_size / num_pieces;
+        let piece_size = calc_piece_size(file_size); //file_size / num_pieces;
         let p = path.clone();
         let u = uri.clone();
 
@@ -88,13 +88,11 @@ impl FileDownloader {
                         download_piece(&client, &u, file_size, piece_size, offset, p.clone())
                     })
                     .map_err(|_| DlError::StreamProcessing)
+                    .buffered(128)
                     .collect()
-                    .and_then(|dl_jobs| future::join_all(dl_jobs))
+                // .and_then(|dl_jobs| future::join_all(dl_jobs))
             })
-            .map(move |_| HashChecker {
-                path: path,
-                etag: etag,
-            })
+            .map(move |_| HashChecker { path, etag })
     }
 }
 
@@ -106,7 +104,7 @@ pub fn download_piece(
     piece_size: u64,
     offset: u64,
     path: PathBuf,
-) -> Box<Future<Item = u64, Error = DlError> + Send> {
+) -> Box<dyn Future<Item = u64, Error = DlError> + Send> {
     match build_range_request(uri, file_size, piece_size, offset) {
         Err(err) => Box::new(future::err(err)),
         Ok(req) => {
@@ -181,6 +179,34 @@ fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error
     stream::iter_ok::<_, ()>((0..file_size).step_by(piece_size as usize))
 }
 
+/// determines optimal piece size for given file size according to these norms:
+/// http://wiki.depthstrike.com/index.php/Recommendations#Torrent_Piece_Sizes_when_making_torrents
+fn calc_piece_size(file_size: u64) -> u64 {
+    if file_size <= 8_192 {
+        file_size // below 8KiB -> do not break into pieces
+    } else if is_between(file_size, 8_192, 131_072) {
+        8_192 // 8KiB..128KiB -> 8KiB
+    } else if is_between(file_size, 131_072, 52_428_800) {
+        32_768 // 128KiB..50MiB -> 32KiB
+    } else if is_between(file_size, 52_428_800, 157_286_400) {
+        65_536 // 50MiB..150MiB -> 64KiB
+    } else if is_between(file_size, 157_286_400, 367_001_600) {
+        131_072 // 150MiB..350MiB -> 127KiB
+    } else if is_between(file_size, 367_001_600, 536_870_900) {
+        262_144 // 350Mib..512MiB -> 256KiB
+    } else if is_between(file_size, 536_870_900, 1_073_742_000) {
+        524_288 // 512MiB..1GiB -> 512KiB
+    } else if is_between(file_size, 1_073_742_000, 2_147_484_000) {
+        1_048_576 // 1GiB..2GiB -> 1024KiB
+    } else {
+        2_097_152 // above 2GiB -> 2048KiB
+    }
+}
+
+fn is_between(n: u64, floor: u64, ceiling: u64) -> bool {
+    n > floor && n <= ceiling
+}
+
 #[cfg(test)]
 mod download_tests {
     use super::*;
@@ -240,6 +266,10 @@ mod download_tests {
 
     #[test]
     fn downloading_file_in_parallel() {
+        static LARGE_FILE_URL: &'static str =
+            "https://recurse-uploads-production.s3.amazonaws.com/cb60706d-3a65-42cc-bfb4-effc9e81f1f8/austin_guest_resume.pdf";
+        static LARGE_FILE_SIZE: u64 = 637_828_873;
+
         let fd = FileDownloader {
             client: https::get_client(),
             uri: FILE_URL.parse::<Uri>().unwrap(),
@@ -276,5 +306,16 @@ mod download_tests {
                 0, 4096, 8192, 12288, 16384, 20480, 24576, 28672, 32768, 36864, 40960, 45056, 49152
             ]
         )
+    }
+
+    #[test]
+    fn buffering_a_stream() {
+        let results = gen_offsets(64, 2)
+            .map(|n| future::ok(n * 2))
+            .buffered(8)
+            .collect()
+            .wait()
+            .unwrap();
+        assert_eq!(results, (0..128).step_by(4).collect::<Vec<u64>>());
     }
 }

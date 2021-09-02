@@ -40,6 +40,10 @@ impl fmt::Display for DlError {
 }
 
 impl Error for DlError {
+    // TODO: honor following deprecation warning in calls to `err.description()`:
+    //  "use of deprecated associated function `std::error::Error::description`:
+    //  use the Display impl or to_string()"
+    #[allow(deprecated)]
     fn description(&self) -> &str {
         match *self {
             DlError::Checksum => "Failed checksum (hashing or hex encoding failed)",

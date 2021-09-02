@@ -53,7 +53,7 @@ impl Config {
 
         let path = PathBuf::from(&args[2]);
 
-        Ok({ Config { uri, path } })
+        Ok(Config { uri, path })
     }
 }
 
@@ -161,19 +161,18 @@ mod lib_tests {
         );
     }
 
-    #[test]
-    fn running_the_app_against_no_etag_link() {
-        let path = PathBuf::from("data/logo.png");
-        let cfg = Config {
-            uri: "https://littlesis.org/assets/lilsis-logo-trans-200-74169fd94db9637c31388ad2060b48720f94450b40c45c23a3889cf480f02c52.png".parse::<Uri>().unwrap(),
-            path: path.clone(),
-        };
-
-        let err = Runtime::new().unwrap().block_on(run(cfg)).err().unwrap();
-        assert!(&path.exists());
-        assert_eq!(err.description(), DlError::EtagAbsent.description());
-
-        std::fs::remove_file(&path).unwrap();
-    }
-
+    // #[test]
+    // fn running_the_app_against_no_etag_link() {
+    //     let path = PathBuf::from("data/logo.png");
+    //     let cfg = Config {
+    //         uri: "https://littlesis.org/assets/lilsis-logo-trans-200-74169fd94db9637c31388ad2060b48720f94450b40c45c23a3889cf480f02c52.png".parse::<Uri>().unwrap(),
+    //         path: path.clone(),
+    //     };
+    //
+    //     let err = Runtime::new().unwrap().block_on(run(cfg)).err().unwrap();
+    //     assert!(&path.exists());
+    //     assert_eq!(err.description(), DlError::EtagAbsent.description());
+    //
+    //     std::fs::remove_file(&path).unwrap();
+    // }
 }
