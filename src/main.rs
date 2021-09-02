@@ -14,7 +14,7 @@ fn main() {
 
     rt::run(rt::lazy(|| {
         dl::run(cfg).map_err(|err| {
-            eprintln!("> Errror: {}", err);
+            eprintln!("> Error: {}", err);
             process::exit(1);
         })
     }));
