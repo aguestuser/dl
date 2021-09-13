@@ -1,6 +1,8 @@
 # Overview
 
-`dl` is a program that lets you download big files fast(er) by parallelizing downloads across many threads and cores.
+`dl` is a program that lets you download big files fast(er) by parallelizing downloads across many threads and cores. 
+
+It was written in response to a take-home challenge for a software company, but lives on as an interesting playground for playing with network programming in Rust!
 
 **Table Of Contents**
 * [Getting Started](#getting-started)
