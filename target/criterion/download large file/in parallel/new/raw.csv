@@ -1,6 +1,0 @@
-group,function,value,sample_time_nanos,iteration_count
-download large file,in parallel,,25204366846.0,1
-download large file,in parallel,,48499482190.0,2
-download large file,in parallel,,73900352683.0,3
-download large file,in parallel,,93834544928.0,4
-download large file,in parallel,,123440270108.0,5

@@ -185,11 +185,13 @@ The benchmarks from these profiling experiments live with the repo. I performed 
 
 Both rounds were both performed on an 8-core Lenovo X1 Carbon with 16GB of RAM running Debian Buster. The first round was performed on a very slow internet connection at my apartment. The second round was performed on a very fast internet connection at Recurse Center (with speeds of 120 Mbps down / 200 Mbps up).
 
-You can view the reports from these benchmarks in the browser with (for example):
+The benchmark reports are stored in this [gzipped tarball](https://aguestuser.nyc3.digitaloceanspaces.com/dl-benchmarks.tar.gz).
+
+You can view the reports with (for example):
 
 ``` shell
-cd path/to/this/repo
-firefox target/criterion/report/index.html
+wget https://aguestuser.nyc3.digitaloceanspaces.com/dl-benchmarks.tar.gz
+firefox criterion/report/index.html
 ```
 
 ## First round

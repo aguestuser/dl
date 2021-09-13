@@ -1,6 +1,0 @@
-group,function,value,sample_time_nanos,iteration_count
-download large file,in sequence,,25456284316.0,1
-download large file,in sequence,,53858466872.0,2
-download large file,in sequence,,69448437623.0,3
-download large file,in sequence,,105822479949.0,4
-download large file,in sequence,,123961362660.0,5
