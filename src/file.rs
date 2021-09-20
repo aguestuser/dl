@@ -39,35 +39,14 @@ impl FileDownloader {
         }
     }
 
-    /// given:a http `client`, the `uri` for a file, the file's `size` (in bytes) and a `target` output path
-    /// download the entire file in sequence and store it to disk
-    /// NOTE: this function is provided mainly for benchmarking comparison with its parallel counterpart
-    pub fn fetch_seq(self) -> Box<dyn Future<Item = bool, Error = DlError> + Send> {
-        let uri = self.uri.clone();
-        let response = self.client.get(uri).map_err(DlError::Hyper);
-        let file = File::create(self.path).map_err(DlError::Io);
-        Box::new(
-            response
-                .join(file)
-                .and_then(|(r, f)| write_to_file(r, f, 4096))
-                .map(move |_| true),
-        )
-    }
-
     /// given an http `client`, a file's `uri`, a known `file_size`, a desired `piece_size` (in bytes) and an output `path`:
     /// - create an empty file of the correct size on the local file system
     /// - download pieces of the file in parallel
     /// - write each piece to the correct offset in the blank file (also in parallel)
     pub fn fetch(self) -> impl Future<Item = HashChecker, Error = DlError> + Send {
-        // TODO:
-        // (1) increase fault tolerance by:
+        // TODO increase fault tolerance by:
         //   - inspecting completed futures for success/error retrying all failed requests/writes until no failures
         //   - persisting state of downloads in hashmap, serializing to disk at interval (to be able to restart on crash)
-        // (2) prevent runaway requests from causing "too many open file errors"
-        //   - observed when ratio of pieces to threads gets very high
-        //   - caused by hyper keeping too many sockets open as http request speed exceeds file write speed
-        //   - see (e.g.): https://github.com/seanmonstar/reqwest/issues/386#issuecomment-440891158
-        //   - fix: buffer the stream (unimplemented for now: the types for that are hard!)
         let Self {
             client,
             file_size,
@@ -78,7 +57,7 @@ impl FileDownloader {
             ..
         } = self;
 
-        let piece_size = calc_piece_size(file_size); //file_size / num_pieces;
+        let piece_size = file_size / parallelism as u64;
         let p = path.clone();
         let u = uri.clone();
 
@@ -180,34 +159,6 @@ fn gen_offsets(file_size: u64, piece_size: u64) -> impl Stream<Item = u64, Error
     stream::iter_ok::<_, ()>((0..file_size).step_by(piece_size as usize))
 }
 
-/// determines optimal piece size for given file size according to these norms:
-/// http://wiki.depthstrike.com/index.php/Recommendations#Torrent_Piece_Sizes_when_making_torrents
-fn calc_piece_size(file_size: u64) -> u64 {
-    if file_size <= 8_192 {
-        file_size // below 8KiB -> do not break into pieces
-    } else if is_between(file_size, 8_192, 131_072) {
-        8_192 // 8KiB..128KiB -> 8KiB
-    } else if is_between(file_size, 131_072, 52_428_800) {
-        32_768 // 128KiB..50MiB -> 32KiB
-    } else if is_between(file_size, 52_428_800, 157_286_400) {
-        65_536 // 50MiB..150MiB -> 64KiB
-    } else if is_between(file_size, 157_286_400, 367_001_600) {
-        131_072 // 150MiB..350MiB -> 127KiB
-    } else if is_between(file_size, 367_001_600, 536_870_900) {
-        262_144 // 350Mib..512MiB -> 256KiB
-    } else if is_between(file_size, 536_870_900, 1_073_742_000) {
-        524_288 // 512MiB..1GiB -> 512KiB
-    } else if is_between(file_size, 1_073_742_000, 2_147_484_000) {
-        1_048_576 // 1GiB..2GiB -> 1024KiB
-    } else {
-        2_097_152 // above 2GiB -> 2048KiB
-    }
-}
-
-fn is_between(n: u64, floor: u64, ceiling: u64) -> bool {
-    n > floor && n <= ceiling
-}
-
 #[cfg(test)]
 mod download_tests {
     use std::path::Path;
@@ -221,59 +172,10 @@ mod download_tests {
 
     const FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
     const FILE_SIZE: u64 = 53_143;
-    const PADDED_FILE_SIZE: u64 = 57_239;
     const FILE_MD5_SUM: &'static str = "ac89ac31a669c13ec4ce037f1203022c";
-    const PADDED_FILE_MD5_SUM: &'static str = "fb8c6de35d7bb3afed571233307aff86";
-
-    #[test]
-    fn downloading_file_in_sequence() {
-        let fd = FileDownloader {
-            client: https::get_client(1),
-            uri: FILE_URL.parse::<Uri>().unwrap(),
-            path: PathBuf::from("data/foo_seq.pdf"),
-            file_size: 0,
-            etag: None,
-            parallelism: 1,
-        };
-
-        // TODO: alleviate the need for all this cloning by making a Downloader struct to own client, uri, etc...
-        let result = fd
-            .fetch_seq()
-            .and_then(move |_| {
-                tokio_fs::metadata(Path::new("data/foo_seq.pdf")).map_err(DlError::Io)
-            })
-            .map(|md| {
-                // when run with entire test suite, sometimes an extra 4096 bytes gets tacked on in this test.
-                // weird, huh? instead of worrying about that too much (just a code challenge, right?),
-                // let's just write at est that works for both cases...
-                match md.len() {
-                    FILE_SIZE => assert!(checksum::md5sum_check(
-                        &Path::new("data/foo_seq.pdf"),
-                        FILE_MD5_SUM
-                    )
-                    .unwrap_or(false)),
-                    PADDED_FILE_SIZE => assert!(checksum::md5sum_check(
-                        &Path::new("data/foo_seq.pdf"),
-                        PADDED_FILE_MD5_SUM
-                    )
-                    .unwrap_or(false)),
-                    _ => panic!(
-                        "File download wrote wrong number or order of bytes. File size: {}",
-                        md.len()
-                    ),
-                }
-            });
-
-        Runtime::new().unwrap().block_on(result).unwrap();
-        std::fs::remove_file(&Path::new("data/foo_seq.pdf")).unwrap();
-    }
 
     #[test]
     fn downloading_file_in_parallel() {
-        // static LARGE_FILE_URL: &'static str =
-        //     "https://recurse-uploads-production.s3.amazonaws.com/cb60706d-3a65-42cc-bfb4-effc9e81f1f8/austin_guest_resume.pdf";
-        // static LARGE_FILE_SIZE: u64 = 637_828_873;
-
         let fd = FileDownloader {
             client: https::get_client(*DEFAULT_PARALLELISM),
             uri: FILE_URL.parse::<Uri>().unwrap(),

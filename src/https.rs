@@ -3,8 +3,6 @@ use hyper::client::HttpConnector;
 use hyper::Body;
 use hyper_tls::HttpsConnector;
 
-use crate::DEFAULT_PARALLELISM;
-
 pub type HttpsClient = Client<HttpsConnector<HttpConnector>, Body>;
 
 /// returns a (hyper) async https client with threadpool of given size
@@ -21,6 +19,7 @@ pub fn get_client_of(thread_pool_size: usize) -> HttpsClient {
 #[cfg(test)]
 mod https_tests {
     use super::*;
+    use crate::DEFAULT_PARALLELISM;
 
     #[test]
     fn getting_client() {

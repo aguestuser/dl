@@ -132,94 +132,60 @@ This encoding of application state as transitions between structs is a rust conv
 As should be evident from the above, the flow of the program is to:
 
 - accept configs from the user
-- make a `HEAD` request to the user-supplied url to:
-  - see if it supports range requests, and if so:
-  - retrieve the length of the file and (if it exists) its etag
+- make a `HEAD` request to the user-supplied url to see if it supports range requests, and if so, retrieve the length of the file and (if it exists) its etag
 - download the file in several parallel chunks
 - take the hash of the downloaded file to see if it matches the advertised etag
 
 Most of the heavy lifting comes in `dl::file::FileDownloader::fetch`. This function:
 
 - creates a blank placeholder file into which chunks will be written as soon as they come off the wire
-- calculates optimally-sized chunks in which to download the file, then generates a stream of chunk-sized offsets to use in range requests)
-- consumes the stream of offsets and fires of a stream of parallel range requests for the corresponding chunk
-- transforms the stream of responses into a stream of buffered bytes, which it writes to the placeholder file after seeking to the correct offset (note: all writes are performed in parallel)
-- collects this stream of futures into a single future that resolves successfully if all requests resovle successfully and with failure if any requests fail (yes: we could be less brittle than that in future iterations!**
+- calculates optimally-sized chunks in which to download the file (where "optimal" is file_size / P; P = degree of parallelism in app) and generates a stream of chunk-sized offsets to use in range requests
+- issues parallel range requests for the chunk at each offset (where each request is represented as a future and the set of all requests is represented as a stream of futures, derrived from our original stream of offsets)
+- reads the bytes of each response into a buffer, whose contents are written to the placeholder file after seeking to the correct offset (note: all writes are performed in parallel via stream composition)
+- collects the stream of parallel futures described above into a single future (via chained calls to `buffer_unordered` and `collect`) which resolves successfully if all requests resolve successfully and with failure if any request fails (yes: we could be less brittle than that in future iterations!**
 
 **A brief note on types:**
 
-Each call to `download_piece` returns a value that we represent as a `Future<u64, DlError>`. The `u64` represents the offset of the downloaded chunk-- in case we wanted to track the status of each request for retries, which we don't currently do (very brittle, I know!).
+Each call to `download_piece` returns a value that we represent as a `Future<u64, DlError>`. The `u64` represents the offset of the downloaded chunk-- in case we wanted to track the status of each request for retries, which we don't currently do.
 
-The`DlError` is a custom error class that serves as an enumerable set of all possible errors we might see in the program's execution. Constructing this type involves a lot of boilerplate. (See `dl::errors`). BUT... having this type around turns out to do a lot of work. For starters, it's **necessary*** to make the "types line up" for all of our variously-typed futures to return an error component of the same type, which allows us to use (monadic) `map`, `map_err`, and `and_then` combinators to manage control flow.
+The`DlError` is a custom error class that serves as an enumerable set of all possible errors we might see in the program's execution. Constructing this type involves a lot of boilerplate. (See `dl::errors`). BUT... having this type around turns out to do a lot of work. For starters, it's **necessary** to make the "types line up" for all of our variously-typed futures to return an error component of the same type, which allows us to use (monadic) `map`, `map_err`, and `and_then` combinators to manage control flow.
 
-It also makes error-handling in the main loop a breeze, since we have a strong guarantee that our main loop will only ever produce (future) errors of a certain type and that execution will short circuit as soon as one is encountered. Thus, we can just call our main function and `map_err` over its results to print the correct error at the correct time without worrying too much about it. If we wanted to bucket errors into smaller groupings for a larger calling function, that would also be easy. I found all this business with errors annoying at first, but in the end I liked it!
+It also makes error-handling in the main loop a breeze, since we have a strong guarantee that our main loop will only ever produce (future) errors of a certain type and that execution will short circuit as soon as one is encountered. Thus, we can just call our main function and `map_err` over its results to print the correct error at the correct time without worrying too much about it. 
 
-if you see a `Box<Future>** and wonder what's going on: its main purpose is to make sure the compiler has enough information about what kind of future we're returning when we compose Futures of slightly varying types.
+If you see a `Box<Future>` and wonder what's going on: its main purpose is to make sure the compiler has enough information about what kind of future we're returning when we compose Futures of slightly varying types.
 
-**A note on piece size calculation:**
+**A note on parallelism:**
 
-In my original solution, I used a tiered system of coercing piece sizes into a set of tiered bands -- with larger files getting larger piece sizes -- according to [this scheme](http://wiki.depthstrike.com/index.php/Recommendations#Torrent_Piece_Sizes_when_making_torrents) recommended for calculating file piece size for torrents.
+There are several strategies I could have used to leverage parallelism in this application. I chose the simplest one I could think of: 
 
-However, I found that at very large file sizes (~200MB and above), I would observe the following bugs:
+- Discover the number of logical cores on my machine (in my case 12). Call this number `P`, and assume it is the optimal level of parallelism for the application.[1] 
+- Divide the file into `P` pieces and download them in a stream of `P` parallel tasks (i.e., "futures") using an https client configured with a thread pool of size `P` 
+- When all tasks have completed, collect their results using built-in stream combinators provided with the tokio framework.
 
-1. `too many open file` errors from the OS (caused by a flood of request causing too many sockets to remain open at the same time)
-2. `connection reset by peer` errors from the server (presumably caused by our unthrottled traffic looking like an attack)
+I could have alternately spawned `P` threads or `P` tasks and had them send their results over a channel to an aggregator thread or task (which I may try out in further experimentation), but for current purposes, this seemed the most straightforward approach.
 
-Both introduced halting errors, which was a real bummer!
-
-I needed some way to throttle the number of requests being processed at the same time. I briefly investigated using [futures::stream::buffered](https://docs.rs/futures/0.1.27/futures/stream/trait.Stream.html#method.buffered), which is supposed to throttle stream processing, but proved difficult to implement, and outside the scope of this challenge's timeline to figure out.
-
-Instead, I realized I could effectively "throttle" the number of requests by setting a ceiling on the number of pieces I divided the file into, and then requesting them all in one blast (without throttling).
-
-After some benchmarking, I determined that 32 pieces (with a thread pool of 8) seemed to perform the fastest, so I opted for this as my jury-rigged "throttling" solution. I realize it's sort of hacky, but it gets the job done and prevents the program from crashing when trying to download large files, so I counted it as a win!
-
-I would be interested in investigating other throttling strategies were I to continue to develop the project.
+[1] See below for benchmarking experiments to test this assumption.
 
 # Profiling <a name="profiling"></a>
 
-My main goal in building this project was to build something that was fast, but not necessarily faulttolerant. (And to learn about async programming in rust!)
+To make sure the program was successfully leveraging parallelism to increase performance (and validate my assumption of the optimal level of parallelization), I performed some elementary profiling with various levels of parallelism.
 
-On this score, I think I did okay. To make sure this was true, I performed some elementary profiling to compare the performance of my parallel solution with a straight-up `GET` request.
-
-The benchmarks from these profiling experiments live with the repo. I performed two rounds of benchmarks (one on my un-throttled solution, and another round on my throttled solution).
-
-Both rounds were both performed on an 8-core Lenovo X1 Carbon with 16GB of RAM running Debian Buster. The first round was performed on a very slow internet connection at my apartment. The second round was performed on a very fast internet connection at Recurse Center (with speeds of 120 Mbps down / 200 Mbps up).
-
-The benchmark reports are stored in this [gzipped tarball](https://aguestuser.nyc3.digitaloceanspaces.com/dl-benchmarks.tar.gz).
-
-You can view the reports with (for example):
+The benchmarks from these profiling experiments live with the repo. You can view the reports with (for example):
 
 ``` shell
-wget https://aguestuser.nyc3.digitaloceanspaces.com/dl-benchmarks.tar.gz
-firefox criterion/report/index.html
+cd <this repo>
+firefox target/criterion/report/index.html
 ```
 
-## First round
+I performed the benchmarks on a Thinkpad with 12 logical (6 physical) cores with internet speeds of ~850Mbps up / 930Mbps down. For each trial, I downloaded files of varying sizes (~50 KB, ~25 MB, and ~500 MB) with varying levels of parallelism (1, 6, 12, 24, 48) -- running 20 trials per permutation.
 
-In my first round of benchmarking (performed at home on a slow internet connection**, my goal was to compare my parellel solution to a GET request downloading the same file. I wanted to see if the parallel solution outperformed the sequential version and observe see how this relationship scaled with increasing file sizes.
+The benchmarks demonstrated that:
 
-The upshot was that the parallel solution performs increasingly better than its sequential counterpart the larger the files it is downloading.
+- Increasing parallelism did not yield measurable performance gains for files on the order of KB (presumably b/c the overhead of context switching dominates any gains from parallelism given the small amount of data to be downloaded and the speed of the network on which I was testing).
+- Gains from parallelism begin accruing for files on the order of MB and increased as a factor of file size thereafter -- producing speed ups of 2x and 3x for files of size ~25 MB and ~500 MB, respectively.
+- At sizes large enough for parallelism to increase performance, setting the parallelism level `P` to the number of cores on the machine (in my case 12), was a more or less optimal choice.[1]
 
-- **For small files (on the order of 50KB):** the parallel solution performed roughly the same as a GET request -- downloading files in ~400ms.
-- **For medium sized files (on the order of 50MB):** the parallel solution outperformed a GET request by roughly 8x (13s vs 102s)
-- **For large files (on the order of 500MB):** I don't have any data available because my solution fell down at that scale.
-
-## Second pass
-
-After settling on a "dumb" method of throttling, I decided to profile, this time with the goals of (1) determine an optimal number of pieces ,and (2) comparing the parallel solution to the sequential solution as above.
-
-For the former trial I compared dividing a file into 8, 16, and 32 pieces (multiples of the number of cores on my machine), I found that 32 pieces (meaning that at most 32 write jobs would be happening concurrently) worked best. At 64, I found that certain servers would get flooded with requests and reset the connection. (Since I had descoped stream buffering, 32 seemed good enough.)
-
-First of all, I noticed that my throttled solution was able to download very large files (up to 2GB) without falling down. Yay!
-
-Secondly, I noticed that with a faster internet connection, it took larger and larger files before I saw any gains from parallelizing. I am not sure exactly how to explain that observation, but it was interesting! More specifically:
-
-- **For small files (~50KB):** The parallel solution was 1.5x slower than a GET request (120ms v 80ms)
-- **For medium files (~50MB):** The parallel solution was trivially faster than a GET request (1.1 s v. 1.2 s)
-- **For large files (~500MB):** The parallel solution was trivially faster than a GET request (24.3s vs 25.2s)
-- **For very large files (~2GB):** The parallel solution was ~3x faster than a GET request (78s vs. 253s)
-
-
+[1] More specifically: For files of size ~25 MB, download times decreased as `P` increased from 1 to 12, then increased again for values of `P` higher than 12. For files of size ~500 MB, download times decreased hyperbolically as `P` increased, with the reflection point of the hyperbola appearing somewhere before P=12. Since in the first case 12 *was* the optimal choice and in the latter case, download times only decreased asymtotically after reaching 12, setting `P` =12 seems to be an optimal choice in a situation in which we must choose a single vale of `P` for all file sizes and network speeds.
 
 
 # TODO <a name="todo"></a>
@@ -230,13 +196,13 @@ As noted above, my solution has two major flaws:
 
 Additionally:
 
-2. It relies on discovering the file of the size in advance (to calculate chunk sizes) but has no fallback measures in place for discovering that information in the case that the target server does not supply in in the response to a `HEAD` request.
+2. It relies on discovering the file of the size in advance (to calculate chunk sizes) but has no fallback measures in place for discovering that information in the case that the target server does not supply it in the response to a `HEAD` request.
 
 If I had more time to work on this project, I'd want to solve the above problems in roughly that order. Here are some preliminary thoughts on how I'd do so:
 
 ## 1. Handling Failed Requests
 
-To handle failed requests, first we'd want to track the status of all requests. We'd need to store this data in some sort of thread-safe data structure that a bunch of parallel threads could read fro mand write to in parallel without producing contention or draining resources in acquiring locks, etc. My data structure of choice would be some sort of concurrent hash map (which has a series of distribtued mutexes on entries the map, rather than one mutex on the whole map). It looks like rust has a decent implementation in [chashmap](https://docs.rs/chashmap/2.2.2/chashmap/).
+To handle failed requests, first we'd want to track the status of all requests. We'd need to store this data in some sort of thread-safe data structure that a bunch of parallel threads could read from and write to in parallel without producing contention or draining resources in acquiring locks, etc. My data structure of choice would be some sort of concurrent hash map. It looks like rust has a decent implementation in [chashmap](https://docs.rs/chashmap/2.2.2/chashmap/).
 
 When `FileDownloader#fetch` was called, I'd pass it an empty `chashmap`. As requests or writes fail and/or succeed I'd write record that fact to an entry in the `chashmap`. As a first approximation, let's say the keys of the map would be the number of the offset, and the values would be an enum with possible values `Success`, `FailedRequest`, `FailedWrite`. If either a request or a write failed, one of the futures in the stream being collected into one future would fail, meaning that the entire future would fail. I'd `map_err` over this future and recursively call `fetch` again, feeding it the (now not-empty) version of the hash-map.
 

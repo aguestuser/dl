@@ -1,0 +1,21 @@
+group,function,value,sample_time_nanos,iteration_count
+download medium file,with varying levels of parallelism,12,547536787.0,1
+download medium file,with varying levels of parallelism,12,1041558206.0,2
+download medium file,with varying levels of parallelism,12,2387385993.0,3
+download medium file,with varying levels of parallelism,12,2677078598.0,4
+download medium file,with varying levels of parallelism,12,3275259085.0,5
+download medium file,with varying levels of parallelism,12,4301187834.0,6
+download medium file,with varying levels of parallelism,12,5011925439.0,7
+download medium file,with varying levels of parallelism,12,5070228439.0,8
+download medium file,with varying levels of parallelism,12,5946950027.0,9
+download medium file,with varying levels of parallelism,12,7169910646.0,10
+download medium file,with varying levels of parallelism,12,7881777424.0,11
+download medium file,with varying levels of parallelism,12,7843813815.0,12
+download medium file,with varying levels of parallelism,12,9636763632.0,13
+download medium file,with varying levels of parallelism,12,10084325983.0,14
+download medium file,with varying levels of parallelism,12,10608137541.0,15
+download medium file,with varying levels of parallelism,12,11644734525.0,16
+download medium file,with varying levels of parallelism,12,11742166051.0,17
+download medium file,with varying levels of parallelism,12,12400181742.0,18
+download medium file,with varying levels of parallelism,12,13088032398.0,19
+download medium file,with varying levels of parallelism,12,14466599837.0,20

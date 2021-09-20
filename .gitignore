@@ -1,5 +1,5 @@
 /target/*
--!/target/criterion
+!/target/criterion
 **/*.rs.bk
 Cargo.lock
 /.idea/

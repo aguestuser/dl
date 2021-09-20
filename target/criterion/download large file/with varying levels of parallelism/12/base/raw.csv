@@ -1,0 +1,21 @@
+group,function,value,sample_time_nanos,iteration_count
+download large file,with varying levels of parallelism,12,6344624636.0,1
+download large file,with varying levels of parallelism,12,12901699145.0,2
+download large file,with varying levels of parallelism,12,19504236916.0,3
+download large file,with varying levels of parallelism,12,26773962820.0,4
+download large file,with varying levels of parallelism,12,33310317964.0,5
+download large file,with varying levels of parallelism,12,38905262161.0,6
+download large file,with varying levels of parallelism,12,46474845376.0,7
+download large file,with varying levels of parallelism,12,53362905896.0,8
+download large file,with varying levels of parallelism,12,60160524691.0,9
+download large file,with varying levels of parallelism,12,65292543829.0,10
+download large file,with varying levels of parallelism,12,80183988650.0,11
+download large file,with varying levels of parallelism,12,78161159188.0,12
+download large file,with varying levels of parallelism,12,84404802717.0,13
+download large file,with varying levels of parallelism,12,92355226296.0,14
+download large file,with varying levels of parallelism,12,99043975472.0,15
+download large file,with varying levels of parallelism,12,105540510401.0,16
+download large file,with varying levels of parallelism,12,113615138819.0,17
+download large file,with varying levels of parallelism,12,116590633710.0,18
+download large file,with varying levels of parallelism,12,124144509627.0,19
+download large file,with varying levels of parallelism,12,130944479241.0,20
