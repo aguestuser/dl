@@ -24,7 +24,7 @@ pub struct Config {
 lazy_static! {
     // twice available cpus plus a "spindle thread"
     // (as per: https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing)
-    pub static ref DEFAULT_PARALLELISM: usize = num_cpus::get() * 2 + 1;
+    pub static ref DEFAULT_PARALLELISM: usize = num_cpus::get();
 }
 
 // these macros are weird but we need them b/c we cannot concat constant string constants in rust

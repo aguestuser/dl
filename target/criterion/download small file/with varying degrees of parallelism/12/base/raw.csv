@@ -1,0 +1,21 @@
+group,function,value,sample_time_nanos,iteration_count
+download small file,with varying degrees of parallelism,12,120807140.0,1
+download small file,with varying degrees of parallelism,12,233620814.0,2
+download small file,with varying degrees of parallelism,12,343582787.0,3
+download small file,with varying degrees of parallelism,12,490560441.0,4
+download small file,with varying degrees of parallelism,12,532696573.0,5
+download small file,with varying degrees of parallelism,12,696324061.0,6
+download small file,with varying degrees of parallelism,12,804657933.0,7
+download small file,with varying degrees of parallelism,12,943010550.0,8
+download small file,with varying degrees of parallelism,12,1123879705.0,9
+download small file,with varying degrees of parallelism,12,1320075105.0,10
+download small file,with varying degrees of parallelism,12,1321503281.0,11
+download small file,with varying degrees of parallelism,12,1484930659.0,12
+download small file,with varying degrees of parallelism,12,1626218832.0,13
+download small file,with varying degrees of parallelism,12,1746579286.0,14
+download small file,with varying degrees of parallelism,12,1850918854.0,15
+download small file,with varying degrees of parallelism,12,1944153717.0,16
+download small file,with varying degrees of parallelism,12,2062481359.0,17
+download small file,with varying degrees of parallelism,12,2042143253.0,18
+download small file,with varying degrees of parallelism,12,2172278513.0,19
+download small file,with varying degrees of parallelism,12,2903850891.0,20

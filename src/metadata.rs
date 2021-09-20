@@ -13,7 +13,6 @@ use crate::error::DlError;
 use crate::file::FileDownloader;
 use crate::https::{self, HttpsClient};
 use crate::Config;
-use crate::DEFAULT_PARALLELISM;
 
 pub const BYTES_RANGE_TYPE: &'static str = "bytes";
 pub const BINARY_CONTENT_TYPE: &'static str = "binary/octet-stream";
