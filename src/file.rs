@@ -1,20 +1,21 @@
+use std::cmp::min;
+use std::io::SeekFrom;
+use std::path::PathBuf;
+
+use futures::{future, stream, Future, Stream};
+use hyper;
+use hyper::Response;
+use hyper::{Body, Request, Uri};
+use tokio_fs::{File, OpenOptions};
+use tokio_io::io;
+use tokio_io::AsyncWrite;
+
 use crate::checksum::HashChecker;
 use crate::error::DlError;
 use crate::https::HttpsClient;
 use crate::metadata::Metadata;
 use crate::metadata::MetadataDownloader;
-use futures::{future, stream, Future, Stream};
-use hyper;
-use hyper::Response;
-use hyper::{Body, Request, Uri};
-use std::cmp::min;
-use std::io::SeekFrom;
-use std::path::PathBuf;
-use tokio_fs::{File, OpenOptions};
-use tokio_io::io;
-use tokio_io::AsyncWrite;
-
-pub const DEFAULT_NUM_PIECES: u64 = 32;
+use crate::DEFAULT_PARALLELISM;
 
 pub struct FileDownloader {
     pub client: HttpsClient,
@@ -22,7 +23,7 @@ pub struct FileDownloader {
     pub path: PathBuf,
     pub file_size: u64,
     pub etag: Option<String>,
-    pub num_pieces: u64,
+    pub parallelism: usize,
 }
 
 impl FileDownloader {
@@ -34,7 +35,7 @@ impl FileDownloader {
             path: mdd.path,
             file_size: md.file_size,
             etag: md.etag,
-            num_pieces: DEFAULT_NUM_PIECES,
+            parallelism: mdd.parallelism,
         }
     }
 
@@ -73,6 +74,7 @@ impl FileDownloader {
             path,
             uri,
             etag,
+            parallelism,
             ..
         } = self;
 
@@ -88,9 +90,8 @@ impl FileDownloader {
                         download_piece(&client, &u, file_size, piece_size, offset, p.clone())
                     })
                     .map_err(|_| DlError::StreamProcessing)
-                    .buffered(128)
+                    .buffer_unordered(parallelism)
                     .collect()
-                // .and_then(|dl_jobs| future::join_all(dl_jobs))
             })
             .map(move |_| HashChecker { path, etag })
     }
@@ -209,11 +210,14 @@ fn is_between(n: u64, floor: u64, ceiling: u64) -> bool {
 
 #[cfg(test)]
 mod download_tests {
-    use super::*;
+    use std::path::Path;
+
+    use tokio::runtime::Runtime;
+
     use crate::checksum;
     use crate::https;
-    use std::path::Path;
-    use tokio::runtime::Runtime;
+
+    use super::*;
 
     const FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
     const FILE_SIZE: u64 = 53_143;
@@ -224,12 +228,12 @@ mod download_tests {
     #[test]
     fn downloading_file_in_sequence() {
         let fd = FileDownloader {
-            client: https::get_client(),
+            client: https::get_client(1),
             uri: FILE_URL.parse::<Uri>().unwrap(),
             path: PathBuf::from("data/foo_seq.pdf"),
             file_size: 0,
             etag: None,
-            num_pieces: 0,
+            parallelism: 1,
         };
 
         // TODO: alleviate the need for all this cloning by making a Downloader struct to own client, uri, etc...
@@ -266,17 +270,17 @@ mod download_tests {
 
     #[test]
     fn downloading_file_in_parallel() {
-        static LARGE_FILE_URL: &'static str =
-            "https://recurse-uploads-production.s3.amazonaws.com/cb60706d-3a65-42cc-bfb4-effc9e81f1f8/austin_guest_resume.pdf";
-        static LARGE_FILE_SIZE: u64 = 637_828_873;
+        // static LARGE_FILE_URL: &'static str =
+        //     "https://recurse-uploads-production.s3.amazonaws.com/cb60706d-3a65-42cc-bfb4-effc9e81f1f8/austin_guest_resume.pdf";
+        // static LARGE_FILE_SIZE: u64 = 637_828_873;
 
         let fd = FileDownloader {
-            client: https::get_client(),
+            client: https::get_client(*DEFAULT_PARALLELISM),
             uri: FILE_URL.parse::<Uri>().unwrap(),
             path: PathBuf::from("data/foo_par.pdf"),
             file_size: FILE_SIZE,
             etag: None,
-            num_pieces: DEFAULT_NUM_PIECES,
+            parallelism: *DEFAULT_PARALLELISM,
         };
 
         let result = fd

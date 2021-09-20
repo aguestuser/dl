@@ -18,6 +18,13 @@ pub mod metadata;
 pub struct Config {
     pub uri: Uri,
     pub path: PathBuf,
+    pub parallelism: usize,
+}
+
+lazy_static! {
+    // twice available cpus plus a "spindle thread"
+    // (as per: https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing)
+    pub static ref DEFAULT_PARALLELISM: usize = num_cpus::get() * 2 + 1;
 }
 
 // these macros are weird but we need them b/c we cannot concat constant string constants in rust
@@ -25,18 +32,29 @@ pub struct Config {
 // see: https://github.com/rust-lang/rust/issues/31383
 macro_rules! usage {
     () => {
-        "> Correct usage: dl <valid_url> <output_path>"
+        "> Correct usage: dl <valid_url> <output_path> <optional int>)"
     };
 }
 
 macro_rules! insufficient_args {
     () => {
-        concat!("> Error: please provide 2 arguments", "\n", usage!())
+        concat!(
+            "> Error: please provide at least 2 arguments",
+            "\n",
+            usage!()
+        )
     };
 }
+
 macro_rules! invalid_uri {
     () => {
         concat!("> Error: invalid uri", "\n", usage!())
+    };
+}
+
+macro_rules! invalid_parallelism {
+    () => {
+        concat!("> Error: invalid parallelism", "\n", usage!())
     };
 }
 
@@ -53,7 +71,20 @@ impl Config {
 
         let path = PathBuf::from(&args[2]);
 
-        Ok(Config { uri, path })
+        let parallelism = if args.len() == 4 {
+            match args[3].parse::<usize>() {
+                Ok(u) => u,
+                _ => return Err(invalid_parallelism!()),
+            }
+        } else {
+            *DEFAULT_PARALLELISM
+        };
+
+        Ok(Config {
+            uri,
+            path,
+            parallelism,
+        })
     }
 }
 
@@ -106,7 +137,8 @@ mod lib_tests {
             .unwrap(),
             Config {
                 uri: Uri::from_static("https://foo.com"),
-                path: PathBuf::from("bar/baz")
+                path: PathBuf::from("bar/baz"),
+                parallelism: *DEFAULT_PARALLELISM,
             }
         )
     }
@@ -136,6 +168,7 @@ mod lib_tests {
         let cfg = Config {
             uri: "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf".parse::<Uri>().unwrap(),
             path: path.clone(),
+            parallelism: *DEFAULT_PARALLELISM,
         };
 
         Runtime::new().unwrap().block_on(run(cfg)).unwrap();
@@ -151,6 +184,7 @@ mod lib_tests {
         let cfg = Config {
             uri: "https://google.com".parse::<Uri>().unwrap(),
             path: path.clone(),
+            parallelism: *DEFAULT_PARALLELISM,
         };
 
         let err = Runtime::new().unwrap().block_on(run(cfg)).err().unwrap();
@@ -167,6 +201,7 @@ mod lib_tests {
         let cfg = Config {
             uri: "https://en.wikipedia.org/wiki/White-tailed_tropicbird#/media/File:White-tailed_tropicbird.jpg".parse::<Uri>().unwrap(),
             path: path.clone(),
+            parallelism: *DEFAULT_PARALLELISM,
         };
 
         let err = Runtime::new().unwrap().block_on(run(cfg)).err().unwrap();

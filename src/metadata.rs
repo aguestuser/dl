@@ -1,7 +1,5 @@
-use crate::error::DlError;
-use crate::file::FileDownloader;
-use crate::https::{self, HttpsClient};
-use crate::Config;
+use std::path::PathBuf;
+
 use futures::future::IntoFuture;
 use hyper;
 use hyper::header::HeaderValue;
@@ -10,7 +8,12 @@ use hyper::HeaderMap;
 use hyper::StatusCode;
 use hyper::{Body, Request};
 use hyper::{Method, Uri};
-use std::path::PathBuf;
+
+use crate::error::DlError;
+use crate::file::FileDownloader;
+use crate::https::{self, HttpsClient};
+use crate::Config;
+use crate::DEFAULT_PARALLELISM;
 
 pub const BYTES_RANGE_TYPE: &'static str = "bytes";
 pub const BINARY_CONTENT_TYPE: &'static str = "binary/octet-stream";
@@ -26,15 +29,17 @@ pub struct MetadataDownloader {
     pub client: HttpsClient,
     pub uri: Uri,
     pub path: PathBuf,
+    pub parallelism: usize,
 }
 
 impl MetadataDownloader {
     /// constructs a `MetadataDownloader` from a `Config` struct
     pub fn from_config(cfg: Config) -> MetadataDownloader {
         Self {
-            client: https::get_client(),
+            client: https::get_client(cfg.parallelism),
             uri: cfg.uri,
             path: cfg.path,
+            parallelism: cfg.parallelism,
         }
     }
 
@@ -109,24 +114,30 @@ fn parse_etag(headers: &HeaderMap<HeaderValue>) -> Option<String> {
     headers
         .get("etag")
         .map(|val| val.to_str())
-        .and_then(|maybe_str| maybe_str.ok().map(|s| s[1..s.len() - 1].to_string())) // remove escaped quotes
+        .and_then(|maybe_str| maybe_str.ok().map(|s| s[1..s.len() - 1].to_string()))
+    // remove escaped quotes
 }
 
 #[cfg(test)]
 mod metadata_tests {
-    use super::*;
-    use crate::https;
     use std::error::Error;
+
     use tokio::runtime::Runtime;
+
+    use crate::https;
+    use crate::DEFAULT_PARALLELISM;
+
+    use super::*;
 
     const SMALL_FILE_URL: &'static str = "https://recurse-uploads-production.s3.amazonaws.com/b9349b0c-359a-473a-9441-c1bc54a96ca6/austin_guest_resume.pdf";
 
     #[test]
     fn fetching_file_metadata() {
         let mdd = MetadataDownloader {
-            client: https::get_client(),
+            client: https::get_client(*DEFAULT_PARALLELISM),
             uri: SMALL_FILE_URL.parse::<Uri>().unwrap(),
             path: PathBuf::from("data/foo_meta.pdf"),
+            parallelism: *DEFAULT_PARALLELISM,
         };
 
         let fd = Runtime::new().unwrap().block_on(mdd.fetch()).unwrap();
@@ -141,9 +152,10 @@ mod metadata_tests {
     #[test]
     fn handling_absent_file_metadata() {
         let mdd = MetadataDownloader {
-            client: https::get_client(),
+            client: https::get_client(*DEFAULT_PARALLELISM),
             uri: "https://google.com".parse::<Uri>().unwrap(),
             path: PathBuf::from("data/foo_meta.pdf"),
+            parallelism: *DEFAULT_PARALLELISM,
         };
 
         let future_result = mdd.fetch();
