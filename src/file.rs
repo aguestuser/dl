@@ -2,7 +2,8 @@ use std::cmp::min;
 use std::io::SeekFrom;
 use std::path::PathBuf;
 
-use futures::{future, stream, Future, Stream};
+use futures::sync::oneshot::Sender;
+use futures::{future, oneshot, stream, Future, Stream};
 use hyper;
 use hyper::Response;
 use hyper::{Body, Request, Uri};
@@ -15,7 +16,6 @@ use crate::error::DlError;
 use crate::https::HttpsClient;
 use crate::metadata::Metadata;
 use crate::metadata::MetadataDownloader;
-use crate::DEFAULT_PARALLELISM;
 
 pub struct FileDownloader {
     pub client: HttpsClient,
@@ -66,7 +66,19 @@ impl FileDownloader {
             .and_then(move |_| {
                 gen_offsets(file_size, piece_size)
                     .map(move |offset| {
-                        download_piece(&client, &u, file_size, piece_size, offset, p.clone())
+                        let (result_sender, result_receiver) = oneshot::<Result<u64, DlError>>();
+                        tokio::spawn(download_piece(
+                            &client,
+                            &u,
+                            file_size,
+                            piece_size,
+                            offset,
+                            p.clone(),
+                            result_sender,
+                        ));
+                        result_receiver
+                            .wait()
+                            .map_or_else(|_| Err(DlError::StreamProcessing), |x| x)
                     })
                     .map_err(|_| DlError::StreamProcessing)
                     .buffer_unordered(parallelism)
@@ -84,20 +96,34 @@ pub fn download_piece(
     piece_size: u64,
     offset: u64,
     path: PathBuf,
-) -> Box<dyn Future<Item = u64, Error = DlError> + Send> {
+    result_sender: Sender<Result<u64, DlError>>,
+) -> Box<dyn Future<Item = (), Error = ()> + Send> {
     match build_range_request(uri, file_size, piece_size, offset) {
-        Err(err) => Box::new(future::err(err)),
+        Err(err) => {
+            let _ = result_sender.send(Err(err));
+            Box::new(future::err(()))
+        }
         Ok(req) => {
             let response = client.request(req).map_err(|err| DlError::Hyper(err));
             let file = OpenOptions::new()
                 .write(true)
                 .open(path)
                 .map_err(DlError::Io);
+
             Box::new(
                 response
                     .join(file)
                     .and_then(move |(r, f)| write_to_file(r, f, offset))
-                    .map(move |_| offset),
+                    .then(move |res| match res {
+                        Ok(_) => {
+                            let _ = result_sender.send(Ok(offset));
+                            future::ok(())
+                        }
+                        Err(err) => {
+                            let _ = result_sender.send(Err(err));
+                            future::err(())
+                        }
+                    }),
             )
         }
     }
@@ -167,6 +193,7 @@ mod download_tests {
 
     use crate::checksum;
     use crate::https;
+    use crate::DEFAULT_PARALLELISM;
 
     use super::*;
 
